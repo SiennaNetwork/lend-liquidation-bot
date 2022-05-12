@@ -1,0 +1,16 @@
+{
+  "name": "sienna-liquidator",
+  "version": "1.0.0",
+  "main": "dist/index.js",
+  "license": "MIT",
+  "dependencies": {
+    "@bandprotocol/bandchain.js": "^2.1.0",
+    "bignumber.js": "^9.0.2",
+    "secretjs": "0.17.5",
+    "siennajs": "0.2.0-beta.4",
+    "yaml": "^2.0.1"
+  },
+  "devDependencies": {
+    "typescript": "^4.6.3"
+  }
+}

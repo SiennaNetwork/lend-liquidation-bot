@@ -1,0 +1,23 @@
+# ID of the chain to use
+chain_id: 
+
+# The mnemonic of the wallet that will execute the liquidations
+mnemonic: 
+
+# The endpoint to connect to the blockchain from
+api_url: 
+
+# The Band oracle gRPC endpoint. The latest one can be found here (GRPC_WEB): https://docs.bandchain.org/technical-specifications/band-endpoints.html
+band_url: 
+
+# The frequency (in milliseconds) at which the bot will run the liquidation logic.
+interval: 
+
+# The address of the overseer contract that the markets belong to.
+overseer: 
+
+# The markets to liquidate from. Each entry contains:
+# address - the address of the market to liquidate from
+# underlying_vk - The viewing key for the UNDERLYING token of the wallet that will execute the liquidation
+markets:
+ - { address: , underlying_vk: }
