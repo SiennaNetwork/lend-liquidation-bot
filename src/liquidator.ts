@@ -280,6 +280,8 @@ export class Liquidator {
                 if (b.best_case) {
                     break
                 }
+            } else {
+                break
             }
 
             i += 1
