@@ -132,6 +132,13 @@ export class Liquidator {
             return
         }
 
+        if (this.markets.length == 0) {
+            console.log('Wallet underlying balance in all markets is 0. Terminating...')
+            this.stop()
+
+            return
+        }
+
         this.is_executing = true
 
         try {
