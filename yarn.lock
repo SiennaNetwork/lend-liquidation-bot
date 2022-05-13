@@ -1125,10 +1125,10 @@ sha3@~2.1.0:
   dependencies:
     buffer "6.0.3"
 
-siennajs@0.2.0-beta.4:
-  version "0.2.0-beta.4"
-  resolved "https://registry.yarnpkg.com/siennajs/-/siennajs-0.2.0-beta.4.tgz#30b155ea384d112043553f04850461badfe4e7ec"
-  integrity sha512-Cywhs/w4Ru830UupjWLFyH/QJkB/aLeFBRZe0Yx9euGf3FUyi6y03OuIcR2uf5VTQeHpTdW0qHNcxwte8Bq9ww==
+siennajs@0.2.0-beta.5:
+  version "0.2.0-beta.5"
+  resolved "https://registry.yarnpkg.com/siennajs/-/siennajs-0.2.0-beta.5.tgz#0b6b9f5f22346e599fe0eed2cf9dcda226ef416f"
+  integrity sha512-kiOVEucQiWLGwFGJzqGRvM+0OK6cQFR1XkhvTWPRkENjnPHAiQQ2NuWrFgLy+fDdsj1NHliuNtcXF1WuiWd3cw==
   dependencies:
     "@waiting/base64" "^4.2.9"
     secretjs "^0.17.5"
