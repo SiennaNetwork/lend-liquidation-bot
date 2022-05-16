@@ -297,6 +297,8 @@ export class Liquidator {
                     break
                 }
             } else {
+                best_candidate = a.candidate
+
                 break
             }
 
