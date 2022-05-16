@@ -4,11 +4,14 @@ import {
 } from "secretjs";
 import { lend, snip20, Address, ViewingKey, Pagination, create_fee } from "siennajs";
 import BigNumber from 'bignumber.js'
-import { Client as BandClient } from '@bandprotocol/bandchain.js'
 
-BigNumber.config({ EXPONENTIAL_AT: 1e9 })
+BigNumber.config({
+    EXPONENTIAL_AT: 1e9,
+    ROUNDING_MODE: BigNumber.ROUND_DOWN
+})
 
-const LIQUIDATE_COST = 130000
+const LIQUIDATE_COST = 550_000
+const BLACKLISTED_SYMBOLS = ['LUNA', 'UST']
 
 export interface Config {
     markets: MarketConfig[],
@@ -46,14 +49,13 @@ interface Candidate {
 
 export class Liquidator {
     private handle?: NodeJS.Timer
-    private oracle: BandClient
     private is_executing: boolean = false
     private prices: Record<string, number> = { }
     private current_height = 0
 
     static async create(config: Config): Promise<Liquidator> {
         const client = await build_client(config.mnemonic, config.api_url)
-
+        
         const overseer = new lend.OverseerContract(config.overseer, client)
 
         const overseer_config = await overseer.query().config()
@@ -64,7 +66,8 @@ export class Liquidator {
 
         const all_markets = await fetch_all_pages(
             (page) => overseer.query().markets(page),
-            30
+            30,
+            (x) => !BLACKLISTED_SYMBOLS.includes(x.symbol)
         )
 
         const markets: Market[] = []
@@ -84,13 +87,16 @@ export class Liquidator {
             const token_contract = new snip20.Snip20Contract(token.address, client)
             const balance = await token_contract.query().get_balance(client.senderAddress, market_config.underlying_vk)
 
-            const market: Market = {
-                contract,
-                decimals: match.decimals,
-                symbol: match.symbol,
-                user_balance: new BigNumber(balance)
+            if (balance != '0') {
+                const market: Market = {
+                    contract,
+                    decimals: match.decimals,
+                    symbol: match.symbol,
+                    user_balance: new BigNumber(balance)
+                }
+
+                markets.push(market)
             }
-            markets.push(market)
         }
 
         const price_symbols = new Set(all_markets.map(x => x.symbol))
@@ -102,17 +108,22 @@ export class Liquidator {
             console.log(`Wallet balance: ${x.user_balance}\n`)
         })
 
-        return new this(config, markets, [...price_symbols], constants)
+        return new this(
+            client,
+            config,
+            markets,
+            [...price_symbols],
+            constants
+        )
     }
     
     private constructor(
+        private client: SigningCosmWasmClient,
         private config: Config,
         private markets: Market[],
         private price_symbols: string[],
         private constants: LendConstants
-    ) {
-        this.oracle = new BandClient(config.band_url)
-    }
+    ) { }
 
     async start() {
         this.handle = setInterval(
@@ -142,7 +153,7 @@ export class Liquidator {
         this.is_executing = true
 
         try {
-            const block = await this.markets[0].contract.execute_client?.getBlock()
+            const block = await this.client.getBlock()
 
             if (!block) {
                 console.log("Couldn't fetch latest block info. Skipping round...")
@@ -172,17 +183,18 @@ export class Liquidator {
     
                 return
             }
-    
+
             const market = this.markets[index]
             const result = await market.contract.exec(
                 create_fee(LIQUIDATE_COST.toString())
             ).liquidate(
-                best_loan.payable.toString(),
+                best_loan.payable.toFixed(0),
                 best_loan.id,
                 best_loan.market_info.contract.address
             )
 
-            console.log(`Successfully liquidated a loan by repaying ${best_loan.payable.toString()} ${market.symbol} for a profit of ~$${best_loan.seizable_usd}!`)
+            const repaid_amount = normalize_denom(best_loan.payable, market.decimals)
+            console.log(`Successfully liquidated a loan by repaying ${repaid_amount.toString()} ${market.symbol} and seized ~$${best_loan.seizable_usd} worth of ${best_loan.market_info.symbol} (transfered to market: ${best_loan.market_info.contract.address})!`)
             console.log(`TX hash: ${result.transactionHash}`)
 
             market.user_balance = market.user_balance.minus(best_loan.payable)
@@ -199,17 +211,14 @@ export class Liquidator {
     }
 
     private async fetch_prices() {
-        const symbols = this.price_symbols.map(x => `${x}/USD`)
+        const symbols = this.price_symbols.map(x => `symbols=${x}`)
+        
+        const resp = await fetch(`${this.config.band_url}/oracle/v1/request_prices?${symbols.join('&')}`)
+        const prices = await resp.json()
 
-        const prices = await this.oracle.getReferenceData(
-            symbols,
-            3,
-            4
-        )
-
-        prices.forEach(x => {
-            const pair = x.pair.split('/')
-            this.prices[pair[0]] = x.rate
+        prices.price_results.forEach((x: any) => {
+            const price = new BigNumber(x.px).dividedBy(x.multiplier).toNumber()
+            this.prices[x.symbol] = price
         })
     }
 
@@ -217,7 +226,14 @@ export class Liquidator {
         const candidates = await fetch_all_pages(
             (page) => market.contract.query().borrowers(page, this.current_height),
             10,
-            (x) => x.liquidity.shortfall != '0'
+            (x) => {
+                if (x.liquidity.shortfall == '0')
+                    return false
+
+                x.markets = x.markets.filter(m => !BLACKLISTED_SYMBOLS.includes(m.symbol))
+
+                return x.markets.length != 0
+            }
         )
 
         if (candidates.length == 0) {
@@ -314,7 +330,7 @@ export class Liquidator {
             const info = await market.contract.query().simulate_liquidation(
                 borrower.id,
                 m.contract.address,
-                payable.toString(),
+                payable.toFixed(0),
                 this.current_height
             )
 

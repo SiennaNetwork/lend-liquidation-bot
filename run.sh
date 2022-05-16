@@ -4,4 +4,4 @@ if ! yarn run tsc ; then
     exit
 fi
 
-node dist/index.js
+node --experimental-fetch dist/index.js

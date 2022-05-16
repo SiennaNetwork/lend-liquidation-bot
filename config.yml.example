@@ -7,7 +7,7 @@ mnemonic:
 # The endpoint to connect to the blockchain from
 api_url: 
 
-# The Band oracle gRPC endpoint. The latest one can be found here (GRPC_WEB): https://docs.bandchain.org/technical-specifications/band-endpoints.html
+# The Band oracle REST endpoint. The latest one can be found here: https://docs.bandchain.org/technical-specifications/band-endpoints.html
 band_url: 
 
 # The frequency (in milliseconds) at which the bot will run the liquidation logic.
