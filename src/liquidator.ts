@@ -357,7 +357,6 @@ export class Liquidator {
             if(info.shortfall == '0') {
                 actual_payable = payable
                 actual_seizable_usd = normalize_denom(seizable.multipliedBy(this.prices[m.symbol]), m.decimals)
-                market_index = i
 
                 // We don't have to check further since this is the second best scenario that we've got.
                 done = true
