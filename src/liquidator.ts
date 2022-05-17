@@ -365,14 +365,22 @@ export class Liquidator {
             } else {
                 // Otherwise check by how much we'd need to decrease our repay amount in order for the
                 // liquidation to be successful and also decrease the seized amount by that percentage.
-                const shortfall = new BigNumber(info.shortfall).multipliedBy(exchange_rate)
-                actual_payable = payable.minus(shortfall)
+                const actual_seizable = new BigNumber(info.seize_amount).minus(info.shortfall)
 
-                const decrease = actual_payable.dividedBy(payable)
-                actual_seizable_usd = normalize_denom(
-                    seizable.multipliedBy(decrease).multipliedBy(this.prices[m.symbol]),
-                    m.decimals
-                )
+                if (actual_seizable.isZero()) {
+                    actual_payable = new BigNumber(0)
+                    actual_seizable_usd = new BigNumber(0)
+                } else {
+                    const seizable_price = actual_seizable.multipliedBy(this.prices[m.symbol]).multipliedBy(exchange_rate)
+                    const borrowed_premium = new BigNumber(this.constants.premium).multipliedBy(this.prices[market.symbol])
+                
+                    actual_payable = seizable_price.dividedBy(borrowed_premium)
+    
+                    actual_seizable_usd = normalize_denom(
+                        actual_seizable.multipliedBy(this.prices[m.symbol]),
+                        m.decimals
+                    )
+                }
             }
 
             if (actual_seizable_usd.gt(best_seizable_usd)) {
