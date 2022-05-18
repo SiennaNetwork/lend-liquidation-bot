@@ -1,9 +1,10 @@
 import {
-    SigningCosmWasmClient, Secp256k1Pen, EnigmaUtils,
-    encodeSecp256k1Pubkey, pubkeyToAddress
+    Secp256k1Pen, EnigmaUtils, encodeSecp256k1Pubkey, pubkeyToAddress
 } from "secretjs";
 import { lend, snip20, Address, ViewingKey, Pagination, create_fee } from "siennajs";
 import BigNumber from 'bignumber.js'
+
+import { ScrtClient } from './client'
 
 BigNumber.config({
     EXPONENTIAL_AT: 1e9,
@@ -118,7 +119,7 @@ export class Liquidator {
     }
     
     private constructor(
-        private client: SigningCosmWasmClient,
+        private client: ScrtClient,
         private config: Config,
         private markets: Market[],
         private price_symbols: string[],
@@ -461,14 +462,14 @@ async function fetch_all_pages<T>(
     return result
 }
 
-async function build_client(mnemonic: string, api_url: string): Promise<SigningCosmWasmClient> {
+async function build_client(mnemonic: string, api_url: string): Promise<ScrtClient> {
     const pen = await Secp256k1Pen.fromMnemonic(mnemonic)
     const seed = EnigmaUtils.GenerateNewSeed();
   
     const pubkey  = encodeSecp256k1Pubkey(pen.pubkey)
     const address = pubkeyToAddress(pubkey, 'secret')
   
-    return new SigningCosmWasmClient(
+    return new ScrtClient(
         api_url,
         address,
         (bytes) => pen.sign(bytes),
