@@ -248,12 +248,13 @@ export class Liquidator {
     private async find_best_candidate(market: Market, borrowers: lend.MarketBorrower[]): Promise<Candidate | null> {
         const exchange_rate_request = market.contract.query().exchange_rate(this.current_height)
 
-        borrowers.forEach(x => x.markets.sort((a, b) => {
+        const sort_by_price = (a: lend.Market, b: lend.Market) => {
             const price_a = this.prices[a.symbol]
             const price_b = this.prices[b.symbol]
 
-            return price_a - price_b
-        }))
+            return price_b - price_a
+        }
+        borrowers.forEach(x => x.markets.sort(sort_by_price))
 
         const calc_net = (borrower: lend.MarketBorrower) => {
             const payable = this.payable(market, borrower)
@@ -267,9 +268,13 @@ export class Liquidator {
             const net_a = calc_net(a)
             const net_b = calc_net(b)
 
+            if (net_a.isEqualTo(net_b)) {
+                return sort_by_price(a.markets[0], b.markets[0])
+            }
+
             return net_a.minus(net_b).toNumber()
         })
-
+        
         const exchange_rate = new BigNumber(await exchange_rate_request)
         let best_candidate: Candidate | null = null
         
