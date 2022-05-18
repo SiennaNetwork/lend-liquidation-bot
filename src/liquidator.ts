@@ -126,7 +126,7 @@ export class Liquidator {
         private constants: LendConstants
     ) { }
 
-    async start() {
+    start() {
         this.handle = setInterval(
             async () => this.run_liquidations_round(),
             this.config.interval

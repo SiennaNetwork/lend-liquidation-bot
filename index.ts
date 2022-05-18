@@ -8,7 +8,7 @@ async function main() {
     const config: Config = YAML.parse(file)
     
     const liquidator = await Liquidator.create(config)
-    await liquidator.start()
+    liquidator.start()
 }
 
 main().catch(err => console.error(err))
