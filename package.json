@@ -5,11 +5,13 @@
   "license": "MIT",
   "dependencies": {
     "bignumber.js": "^9.0.2",
+    "node-fetch": "^2.6.7",
     "secretjs": "0.17.5",
     "siennajs": "0.2.0-beta.5",
     "yaml": "^2.0.1"
   },
   "devDependencies": {
+    "@types/node-fetch": "^2.6.1",
     "typescript": "^4.6.3"
   }
 }
