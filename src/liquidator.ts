@@ -147,6 +147,10 @@ export class Liquidator {
         }
     }
 
+    async run_once() {
+        return this.run_liquidations_round()
+    }
+
     private async run_liquidations_round() {
         if (this.is_executing) {
             return
