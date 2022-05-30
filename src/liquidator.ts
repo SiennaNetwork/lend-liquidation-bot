@@ -3,7 +3,7 @@ import {
 } from "secretjs";
 import { lend, snip20, Address, ViewingKey, Pagination, create_fee } from "siennajs";
 import BigNumber from 'bignumber.js'
-
+import fetch from 'node-fetch';
 import { ScrtClient } from './client'
 
 BigNumber.config({
@@ -46,6 +46,14 @@ interface Candidate {
     payable: BigNumber,
     seizable_usd: BigNumber,
     market_info: lend.Market
+}
+
+interface PriceResult {
+    symbol: string,
+    multiplier: string,
+    px: string,
+    request_id: string,
+    resolve_time: string
 }
 
 export class Liquidator {
@@ -215,7 +223,7 @@ export class Liquidator {
         const symbols = this.price_symbols.map(x => `symbols=${x}`)
         
         const resp = await fetch(`${this.config.band_url}/oracle/v1/request_prices?${symbols.join('&')}`)
-        const prices = await resp.json()
+        const prices: {price_results: PriceResult[]} = await resp.json()
 
         prices.price_results.forEach((x: any) => {
             const price = new BigNumber(x.px).dividedBy(x.multiplier).toNumber()
