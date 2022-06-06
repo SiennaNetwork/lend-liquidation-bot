@@ -342,6 +342,18 @@ export class Liquidator {
         let best_payable = new BigNumber(0)
         let market_index = 0
 
+        if (payable.lt(1)) {
+            return {
+                best_case: true,
+                candidate: {
+                    id: borrower.id,
+                    payable: best_payable,
+                    seizable_usd: best_seizable_usd,
+                    market_info: borrower.markets[market_index]
+                }
+            }
+        }
+
         for (let i = 0; i < borrower.markets.length; i++) {
             const m = borrower.markets[i];
 
