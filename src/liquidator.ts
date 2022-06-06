@@ -271,10 +271,10 @@ export class Liquidator {
 
         const calc_net = (borrower: lend.MarketBorrower) => {
             const payable = this.payable(market, borrower)
-
+            
             return payable.multipliedBy(this.constants.premium)
-                .multipliedBy(this.prices[market.symbol])
-                .dividedBy(this.prices[borrower.markets[0].symbol])
+                .multipliedBy(this.prices[borrower.markets[0].symbol])
+                .dividedBy(this.prices[market.symbol])
         }
 
         borrowers.sort((a, b) => {
@@ -285,7 +285,7 @@ export class Liquidator {
                 return sort_by_price(a.markets[0], b.markets[0])
             }
 
-            return net_a.minus(net_b).toNumber()
+            return net_b.minus(net_a).toNumber()
         })
         
         const exchange_rate = new BigNumber(await exchange_rate_request)
