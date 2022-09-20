@@ -1,10 +1,10 @@
 import {
-    Secp256k1Pen, EnigmaUtils, encodeSecp256k1Pubkey, pubkeyToAddress
-} from "secretjs";
-import { lend, snip20, Address, ViewingKey, Pagination, create_fee } from "siennajs";
+    ScrtGrpc, LendOverseer, LendMarket, LendOverseerMarket,
+    LendMarketBorrower, PaginatedResponse, Snip20, Address,
+    Agent, ViewingKey, Pagination, create_fee
+} from "siennajs";
 import BigNumber from 'bignumber.js'
 import fetch from 'node-fetch';
-import { ScrtClient } from './client'
 
 BigNumber.config({
     EXPONENTIAL_AT: 1e9,
@@ -30,7 +30,7 @@ export interface MarketConfig {
 }
 
 interface Market {
-    contract: lend.MarketContract,
+    contract: LendMarket,
     decimals: number,
     symbol: string,
     user_balance: BigNumber
@@ -45,7 +45,7 @@ interface Candidate {
     id: string,
     payable: BigNumber,
     seizable_usd: BigNumber,
-    market_info: lend.Market
+    market_info: LendOverseerMarket
 }
 
 interface PriceResult {
@@ -63,18 +63,19 @@ export class Liquidator {
     private current_height = 0
 
     static async create(config: Config): Promise<Liquidator> {
-        const client = await build_client(config.mnemonic, config.api_url)
-        
-        const overseer = new lend.OverseerContract(config.overseer, client)
+        const chain = new ScrtGrpc(config.chain_id, { url: config.api_url });
+        const client = await chain.getAgent({ mnemonic: config.mnemonic })
 
-        const overseer_config = await overseer.query().config()
+        const overseer = new LendOverseer(client, config.overseer)
+
+        const overseer_config = await overseer.config()
         const constants = {
             close_factor: parseFloat(overseer_config.close_factor),
             premium: parseFloat(overseer_config.premium)
         }
 
         const all_markets = await fetch_all_pages(
-            (page) => overseer.query().markets(page),
+            (page) => overseer.getMarkets(page),
             30,
             (x) => !BLACKLISTED_SYMBOLS.includes(x.symbol)
         )
@@ -88,13 +89,14 @@ export class Liquidator {
                 throw new Error(`Market ${market_config.address} doesn't exist in overseer ${config.overseer}`)
             }
 
-            const contract = new lend.MarketContract(market_config.address, client)
+            const contract = new LendMarket(client, market_config.address)
+            contract.fees.liquidate = create_fee(LIQUIDATE_COST.toString())
 
             // Fetch user balance for this underlying token.
-            const token = await contract.query().underlying_asset()
+            const token = await contract.getUnderlyingAsset()
 
-            const token_contract = new snip20.Snip20Contract(token.address, client)
-            const balance = await token_contract.query().get_balance(client.senderAddress, market_config.underlying_vk)
+            const token_contract = new Snip20(client, token.address)
+            const balance = await token_contract.getBalance(client.address!, market_config.underlying_vk)
 
             if (balance != '0') {
                 const market: Market = {
@@ -127,7 +129,7 @@ export class Liquidator {
     }
     
     private constructor(
-        private client: ScrtClient,
+        private client: Agent,
         private config: Config,
         private markets: Market[],
         private price_symbols: string[],
@@ -166,15 +168,7 @@ export class Liquidator {
         this.is_executing = true
 
         try {
-            const block = await this.client.getBlock()
-
-            if (!block) {
-                console.log("Couldn't fetch latest block info. Skipping round...")
-    
-                return
-            }
-    
-            this.current_height = block.header.height
+            this.current_height = await this.client.chain.height
             await this.fetch_prices()
     
             const candidates = await Promise.all(this.markets.map(x => this.market_candidate(x)))
@@ -198,9 +192,7 @@ export class Liquidator {
             }
 
             const market = this.markets[index]
-            const result = await market.contract.exec(
-                create_fee(LIQUIDATE_COST.toString())
-            ).liquidate(
+            const result: any = await market.contract.liquidate(
                 best_loan.payable.toFixed(0),
                 best_loan.id,
                 best_loan.market_info.contract.address
@@ -237,7 +229,7 @@ export class Liquidator {
 
     private async market_candidate(market: Market): Promise<Candidate | null> {
         const candidates = await fetch_all_pages(
-            (page) => market.contract.query().borrowers(page, this.current_height),
+            (page) => market.contract.getBorrowers(page, this.current_height),
             10,
             (x) => {
                 if (x.liquidity.shortfall == '0')
@@ -258,10 +250,10 @@ export class Liquidator {
         return this.find_best_candidate(market, candidates)
     }
 
-    private async find_best_candidate(market: Market, borrowers: lend.MarketBorrower[]): Promise<Candidate | null> {
-        const exchange_rate_request = market.contract.query().exchange_rate(this.current_height)
+    private async find_best_candidate(market: Market, borrowers: LendMarketBorrower[]): Promise<Candidate | null> {
+        const exchange_rate_request = market.contract.getExchangeRate(this.current_height)
 
-        const sort_by_price = (a: lend.Market, b: lend.Market) => {
+        const sort_by_price = (a: LendOverseerMarket, b: LendOverseerMarket) => {
             const price_a = this.prices[a.symbol]
             const price_b = this.prices[b.symbol]
 
@@ -269,7 +261,7 @@ export class Liquidator {
         }
         borrowers.forEach(x => x.markets.sort(sort_by_price))
 
-        const calc_net = (borrower: lend.MarketBorrower) => {
+        const calc_net = (borrower: LendMarketBorrower) => {
             const payable = this.payable(market, borrower)
             
             return payable.multipliedBy(this.constants.premium)
@@ -333,7 +325,7 @@ export class Liquidator {
 
     private async process_candidate(
         market: Market,
-        borrower: lend.MarketBorrower,
+        borrower: LendMarketBorrower,
         exchange_rate: BigNumber
     ): Promise<{ best_case: boolean, candidate: Candidate }> {
         const payable = this.payable(market, borrower)
@@ -355,11 +347,11 @@ export class Liquidator {
         }
 
         for (let i = 0; i < borrower.markets.length; i++) {
-            const m = borrower.markets[i];
+            const m = borrower.markets[i]
 
             // Values are in sl-tokens so we need to convert to
             // the underlying in order for them to be useful here.
-            const info = await market.contract.query().simulate_liquidation(
+            const info = await market.contract.simulateLiquidation(
                 borrower.id,
                 m.contract.address,
                 payable.toFixed(0),
@@ -434,7 +426,7 @@ export class Liquidator {
         }
     }
 
-    private payable(market: Market, borrower: lend.MarketBorrower): BigNumber {
+    private payable(market: Market, borrower: LendMarketBorrower): BigNumber {
         return clamp(
             new BigNumber(borrower.actual_balance).multipliedBy(this.constants.close_factor),
             market.user_balance
@@ -454,7 +446,7 @@ function normalize_denom(amount: BigNumber, decimals: number): BigNumber {
 }
 
 async function fetch_all_pages<T>(
-    query: (pagination: Pagination) => Promise<lend.PaginatedResponse<T>>,
+    query: (pagination: Pagination) => Promise<PaginatedResponse<T>>,
     limit: number,
     filter?: (x: T) => boolean
 ): Promise<T[]> {
@@ -484,19 +476,4 @@ async function fetch_all_pages<T>(
     } while(start <= total)
 
     return result
-}
-
-async function build_client(mnemonic: string, api_url: string): Promise<ScrtClient> {
-    const pen = await Secp256k1Pen.fromMnemonic(mnemonic)
-    const seed = EnigmaUtils.GenerateNewSeed();
-  
-    const pubkey  = encodeSecp256k1Pubkey(pen.pubkey)
-    const address = pubkeyToAddress(pubkey, 'secret')
-  
-    return new ScrtClient(
-        api_url,
-        address,
-        (bytes) => pen.sign(bytes),
-        seed
-    )
 }
