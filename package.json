@@ -6,7 +6,7 @@
   "dependencies": {
     "bignumber.js": "^9.0.2",
     "node-fetch": "^2.6.7",
-    "siennajs": "https://github.com/SiennaNetwork/siennajs/releases/download/1.0.0-rc.22/siennajs-1.0.0-rc.22.tgz",
+    "siennajs": "https://github.com/SiennaNetwork/siennajs/releases/download/2.1.6/siennajs-2.1.6.tgz",
     "yaml": "^2.0.1"
   },
   "devDependencies": {
