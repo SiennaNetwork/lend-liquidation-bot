@@ -1,7 +1,7 @@
 import {
     ScrtGrpc, LendOverseer, LendMarket, LendOverseerMarket,
     LendMarketBorrower, PaginatedResponse, Snip20, Address,
-    Agent, ViewingKey, Pagination, create_fee
+    Agent, ViewingKey, Pagination, Fee
 } from "siennajs";
 import BigNumber from 'bignumber.js'
 import fetch from 'node-fetch';
@@ -90,7 +90,7 @@ export class Liquidator {
             }
 
             const contract = new LendMarket(client, market_config.address)
-            contract.fees.liquidate = create_fee(LIQUIDATE_COST.toString())
+            contract.fees.liquidate = new Fee(LIQUIDATE_COST, 'uscrt')
 
             // Fetch user balance for this underlying token.
             const token = await contract.getUnderlyingAsset()
@@ -168,7 +168,13 @@ export class Liquidator {
         this.is_executing = true
 
         try {
-            this.current_height = await this.client.chain.height
+            const height = await this.client.chain?.height
+
+            if (!height) {
+                throw new Error("Couldn't fetch current block height.")
+            }
+
+            this.current_height = height
             await this.fetch_prices()
     
             const candidates = await Promise.all(this.markets.map(x => this.market_candidate(x)))
