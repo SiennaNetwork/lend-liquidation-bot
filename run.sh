@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
+export NODE_OPTIONS=--openssl-legacy-provider
 
-if ! yarn run tsc ; then
+if ! npx tsc ; then
     exit
 fi
 
-node --experimental-fetch dist/index.js
+node dist/index.js
