@@ -13,11 +13,15 @@ band_url:
 # The frequency (in milliseconds) at which the bot will run the liquidation logic.
 interval: 
 
-# The address of the overseer contract that the markets belong to.
+# The overseer contract containing the address and code_hash
+# address - the address of the overseer contract
+# code_hash - the code hash of the overseer contract
 overseer: 
+{ address: , code_hash: }
 
 # The markets to liquidate from. Each entry contains:
 # address - the address of the market to liquidate from
 # underlying_vk - The viewing key for the UNDERLYING token of the wallet that will execute the liquidation
+# code_hash - the code hash of the market contract
 markets:
- - { address: , underlying_vk: }
+ - { address: , underlying_vk: , code_hash: }

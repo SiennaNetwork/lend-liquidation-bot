@@ -1,7 +1,7 @@
 import {
     ScrtGrpc, LendOverseer, LendMarket, LendOverseerMarket,
     LendMarketBorrower, PaginatedResponse, Snip20, Address,
-    Agent, ViewingKey, Pagination, Fee
+    Agent, ViewingKey, Pagination, Fee, CodeHash
 } from "siennajs";
 import BigNumber from 'bignumber.js'
 import fetch from 'node-fetch';
@@ -21,16 +21,23 @@ export interface Config {
     chain_id: string,
     mnemonic: string,
     interval: number,
-    overseer: Address
+    overseer: OverseerConfig
+}
+
+export interface OverseerConfig {
+    address: Address,
+    code_hash: CodeHash
 }
 
 export interface MarketConfig {
     address: Address,
     underlying_vk: ViewingKey
+    code_hash: CodeHash
 }
 
 interface Market {
     contract: LendMarket,
+    code_hash: CodeHash,
     decimals: number,
     symbol: string,
     user_balance: BigNumber
@@ -66,7 +73,7 @@ export class Liquidator {
         const chain = new ScrtGrpc(config.chain_id, { url: config.api_url });
         const client = await chain.getAgent({ mnemonic: config.mnemonic })
 
-        const overseer = new LendOverseer(client, config.overseer)
+        const overseer = new LendOverseer(client, config.overseer.address, config.overseer.code_hash)
 
         const overseer_config = await overseer.config()
         const constants = {
@@ -89,13 +96,13 @@ export class Liquidator {
                 throw new Error(`Market ${market_config.address} doesn't exist in overseer ${config.overseer}`)
             }
 
-            const contract = new LendMarket(client, market_config.address)
+            const contract = new LendMarket(client, market_config.address, market_config.code_hash)
             contract.fees.liquidate = new Fee(LIQUIDATE_COST, 'uscrt')
 
             // Fetch user balance for this underlying token.
             const token = await contract.getUnderlyingAsset()
 
-            const token_contract = new Snip20(client, token.address)
+            const token_contract = new Snip20(client,token.address, token.code_hash)
             const balance = await token_contract.getBalance(client.address!, market_config.underlying_vk)
 
             if (balance != '0') {
@@ -103,7 +110,8 @@ export class Liquidator {
                     contract,
                     decimals: match.decimals,
                     symbol: match.symbol,
-                    user_balance: new BigNumber(balance)
+                    user_balance: new BigNumber(balance),
+                    code_hash: market_config.code_hash
                 }
 
                 markets.push(market)
