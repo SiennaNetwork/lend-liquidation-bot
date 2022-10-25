@@ -15,9 +15,10 @@ interval:
 
 # The address of the overseer contract that the markets belong to.
 overseer: 
+{ address: , code_hash: }
 
 # The markets to liquidate from. Each entry contains:
 # address - the address of the market to liquidate from
 # underlying_vk - The viewing key for the UNDERLYING token of the wallet that will execute the liquidation
 markets:
- - { address: , underlying_vk: }
+ - { address: , underlying_vk: , code_hash: }
