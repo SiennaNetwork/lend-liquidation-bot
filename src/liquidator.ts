@@ -236,7 +236,7 @@ export class Liquidator {
     private async market_candidate(market: Market): Promise<Candidate | null> {
         const candidates = await fetch_all_pages(
             (page) => market.contract.getBorrowers(page, this.current_height),
-            3,
+            1,
             (x) => {
                 if (x.liquidity.shortfall == '0')
                     return false
