@@ -3,7 +3,6 @@ import {
     LendMarketBorrower, PaginatedResponse, Snip20, Address,
     Agent, ViewingKey, Pagination, Fee, CodeHash
 } from "siennajs"
-import * as SecretJS from 'secretjs'
 import BigNumber from 'bignumber.js'
 import fetch from 'node-fetch'
 
@@ -71,7 +70,7 @@ export class Liquidator {
     private current_height = 0
 
     static async create(config: Config): Promise<Liquidator> {
-        const chain = new Scrt(config.chain_id, { url: config.api_url, SecretJS });
+        const chain = new Scrt(config.chain_id, { url: config.api_url });
         const client = await chain.getAgent({ mnemonic: config.mnemonic })
 
         const overseer = new LendOverseer(client, config.overseer.address, config.overseer.code_hash)
