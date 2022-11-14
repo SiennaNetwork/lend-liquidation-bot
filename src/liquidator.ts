@@ -1,10 +1,11 @@
 import {
-    ScrtGrpc, LendOverseer, LendMarket, LendOverseerMarket,
+    Scrt, LendOverseer, LendMarket, LendOverseerMarket,
     LendMarketBorrower, PaginatedResponse, Snip20, Address,
     Agent, ViewingKey, Pagination, Fee, CodeHash
-} from "siennajs";
+} from "siennajs"
+import * as SecretJS from 'secretjs'
 import BigNumber from 'bignumber.js'
-import fetch from 'node-fetch';
+import fetch from 'node-fetch'
 
 BigNumber.config({
     EXPONENTIAL_AT: 1e9,
@@ -70,7 +71,7 @@ export class Liquidator {
     private current_height = 0
 
     static async create(config: Config): Promise<Liquidator> {
-        const chain = new ScrtGrpc(config.chain_id, { url: config.api_url });
+        const chain = new Scrt(config.chain_id, { url: config.api_url, SecretJS });
         const client = await chain.getAgent({ mnemonic: config.mnemonic })
 
         const overseer = new LendOverseer(client, config.overseer.address, config.overseer.code_hash)
@@ -102,9 +103,9 @@ export class Liquidator {
             // Fetch user balance for this underlying token.
             const token = await contract.getUnderlyingAsset()
 
-            const token_contract = new Snip20(client,token.address, token.code_hash)
-            const balance = await token_contract.getBalance(client.address!, market_config.underlying_vk)
-
+            //const token_contract = new Snip20(client,token.address, token.code_hash)
+            //const balance = await token_contract.getBalance(client.address!, market_config.underlying_vk)
+            const balance: string = (100 * 10 ** match.decimals).toString()
             if (balance != '0') {
                 const market: Market = {
                     contract,
@@ -206,15 +207,16 @@ export class Liquidator {
             }
 
             const market = this.markets[index]
+            /*
             const result: any = await market.contract.liquidate(
                 best_loan.payable.toFixed(0),
                 best_loan.id,
                 best_loan.market_info.contract.address
             )
-
+            */
             const repaid_amount = normalize_denom(best_loan.payable, market.decimals)
             console.log(`Successfully liquidated a loan by repaying ${repaid_amount.toString()} ${market.symbol} and seized ~$${best_loan.seizable_usd} worth of ${best_loan.market_info.symbol} (transfered to market: ${best_loan.market_info.contract.address})!`)
-            console.log(`TX hash: ${result.transactionHash}`)
+            //console.log(`TX hash: ${result.transactionHash}`)
 
             market.user_balance = market.user_balance.minus(best_loan.payable)
 
@@ -222,8 +224,12 @@ export class Liquidator {
                 console.log(`Ran out of balance for market ${market.contract.address}. Removing...`)
                 this.markets.splice(index, 1)
             }
-        } catch (e) {
+        } catch (e: any) {
             console.log(`Caught an error during liquidations round: ${e}`)
+
+            if (e.stack) {
+                console.log(e.stack)
+            }
         } finally {
             this.is_executing = false
         }
@@ -243,7 +249,18 @@ export class Liquidator {
 
     private async market_candidate(market: Market): Promise<Candidate | null> {
         const candidates = await fetch_all_pages(
-            (page) => market.contract.getBorrowers(page, this.current_height),
+            async (page) => {
+                while (true) {
+                    try {
+                        const result = await market.contract.getBorrowers(page, this.current_height)
+                        
+                        return result
+                    } catch (e: any) {
+                        console.log(`error: ${e.message}`)
+                        page.start += 1;
+                    }
+                }
+            },
             1,
             (x) => {
                 if (x.liquidity.shortfall == '0')
