@@ -82,7 +82,7 @@ export class Liquidator {
         }
 
         const all_markets = await fetch_all_pages(
-            (page) => overseer.getMarkets(page),
+            (page) => retry(() => overseer.getMarkets(page)),
             30,
             (x) => !BLACKLISTED_SYMBOLS.includes(x.symbol)
         )
@@ -100,11 +100,13 @@ export class Liquidator {
             contract.fees.liquidate = new Fee(LIQUIDATE_COST, 'uscrt')
 
             // Fetch user balance for this underlying token.
-            const token = await contract.getUnderlyingAsset()
+            const token = await retry(() => contract.getUnderlyingAsset())
 
-            //const token_contract = new Snip20(client,token.address, token.code_hash)
-            //const balance = await token_contract.getBalance(client.address!, market_config.underlying_vk)
-            const balance: string = (100 * 10 ** match.decimals).toString()
+            const token_contract = new Snip20(client,token.address, token.code_hash)
+            const balance = await retry(() =>
+                token_contract.getBalance(client.address!, market_config.underlying_vk)
+            )
+
             if (balance != '0') {
                 const market: Market = {
                     contract,
@@ -121,10 +123,10 @@ export class Liquidator {
         const price_symbols = new Set(all_markets.map(x => x.symbol))
         price_symbols.add('SCRT') // We always need SCRT, in order to check gas costs
 
-        console.log('Operating with markets:')
+        console.info('Operating with markets:')
         markets.forEach((x) => {
-            console.log(`Market: ${x.contract.address}`)
-            console.log(`Wallet balance: ${x.user_balance}\n`)
+            console.info(`Market: ${x.contract.address}`)
+            console.info(`Wallet balance: ${x.user_balance}\n`)
         })
 
         return new this(
@@ -167,7 +169,7 @@ export class Liquidator {
         }
 
         if (this.markets.length == 0) {
-            console.log('Wallet underlying balance in all markets is 0. Terminating...')
+            console.info('Wallet underlying balance in all markets is 0. Terminating...')
             this.stop()
 
             return
@@ -200,34 +202,40 @@ export class Liquidator {
             })
     
             if (!best_loan) {
-                console.log("Couldn't find a good loan to liquidate this round...")
+                console.info("Couldn't find a good loan to liquidate this round...")
     
                 return
             }
 
             const market = this.markets[index]
-            /*
-            const result: any = await market.contract.liquidate(
-                best_loan.payable.toFixed(0),
-                best_loan.id,
-                best_loan.market_info.contract.address
+            const result: any = await retry(() => {
+                    // TS trippin' here
+                    const loan = best_loan as any;
+
+                    return market.contract.liquidate(
+                        loan.payable.toFixed(0),
+                        loan.id,
+                        loan.market_info.contract.address
+                    )   
+                },
+                3
             )
-            */
+
             const repaid_amount = normalize_denom(best_loan.payable, market.decimals)
-            console.log(`Successfully liquidated a loan by repaying ${repaid_amount.toString()} ${market.symbol} and seized ~$${best_loan.seizable_usd} worth of ${best_loan.market_info.symbol} (transfered to market: ${best_loan.market_info.contract.address})!`)
-            //console.log(`TX hash: ${result.transactionHash}`)
+            console.info(`Successfully liquidated a loan by repaying ${repaid_amount.toString()} ${market.symbol} and seized ~$${best_loan.seizable_usd} worth of ${best_loan.market_info.symbol} (transfered to market: ${best_loan.market_info.contract.address})!`)
+            console.info(`TX hash: ${result.transactionHash}`)
 
             market.user_balance = market.user_balance.minus(best_loan.payable)
 
             if (market.user_balance.isZero()) {
-                console.log(`Ran out of balance for market ${market.contract.address}. Removing...`)
+                console.info(`Ran out of balance for market ${market.contract.address}. Removing...`)
                 this.markets.splice(index, 1)
             }
         } catch (e: any) {
-            console.log(`Caught an error during liquidations round: ${e}`)
+            console.error(`Caught an error during liquidations round: ${JSON.stringify(e, null, 2)}`)
 
             if (e.stack) {
-                console.log(e.stack)
+                console.error(e.stack)
             }
         } finally {
             this.is_executing = false
@@ -249,16 +257,19 @@ export class Liquidator {
     private async market_candidate(market: Market): Promise<Candidate | null> {
         const candidates = await fetch_all_pages(
             async (page) => {
-                while (true) {
-                    try {
-                        const result = await market.contract.getBorrowers(page, this.current_height)
-                        
-                        return result
-                    } catch (e: any) {
-                        console.log(`error: ${e.message}`)
-                        page.start += 1;
-                    }
+                const result = await retry(() =>
+                    market.contract.getBorrowers(page, this.current_height)
+                )
+
+                // Yes, we've come down to this because secretjs returns a string when
+                // a contract error occurs...
+                if (result.hasOwnProperty('entries') &&
+                    result.hasOwnProperty('total')
+                ) {
+                    return result
                 }
+
+                return null
             },
             1,
             (x) => {
@@ -272,7 +283,7 @@ export class Liquidator {
         )
 
         if (candidates.length == 0) {
-            console.log(`No liquidatable loans currently in ${market.contract.address}. Skipping...`)
+            console.info(`No liquidatable loans currently in ${market.contract.address}. Skipping...`)
 
             return null
         }
@@ -281,7 +292,9 @@ export class Liquidator {
     }
 
     private async find_best_candidate(market: Market, borrowers: LendMarketBorrower[]): Promise<Candidate | null> {
-        const exchange_rate_request = market.contract.getExchangeRate(this.current_height)
+        const exchange_rate_request = retry(() =>
+            market.contract.getExchangeRate(this.current_height)
+        )
 
         const sort_by_price = (a: LendOverseerMarket, b: LendOverseerMarket) => {
             const price_a = this.prices[a.symbol]
@@ -381,11 +394,13 @@ export class Liquidator {
 
             // Values are in sl-tokens so we need to convert to
             // the underlying in order for them to be useful here.
-            const info = await market.contract.simulateLiquidation(
-                borrower.id,
-                m.contract.address,
-                payable.toFixed(0),
-                this.current_height
+            const info = await retry(() =>
+                market.contract.simulateLiquidation(
+                    borrower.id,
+                    m.contract.address,
+                    payable.toFixed(0),
+                    this.current_height
+                )
             )
 
             const seizable = new BigNumber(info.seize_amount).multipliedBy(exchange_rate)
@@ -476,7 +491,7 @@ function normalize_denom(amount: BigNumber, decimals: number): BigNumber {
 }
 
 async function fetch_all_pages<T>(
-    query: (pagination: Pagination) => Promise<PaginatedResponse<T>>,
+    query: (pagination: Pagination) => Promise<PaginatedResponse<T> | null>,
     limit: number,
     filter?: (x: T) => boolean
 ): Promise<T[]> {
@@ -490,6 +505,11 @@ async function fetch_all_pages<T>(
             start,
             limit
         })
+
+        if (page == null) {
+            start += limit
+            continue
+        }
 
         total = page.total
         start += limit
@@ -506,4 +526,24 @@ async function fetch_all_pages<T>(
     } while(start <= total)
 
     return result
+}
+
+async function retry<T>(func: () => Promise<T>, retries: number = 5): Promise<T> {
+    do {
+        try {
+            const result = await func()
+
+            return result
+        } catch (e: any) {
+            // generic_err means the error was caused by contract logic,
+            // so repeating the same request would yield the same result
+            if (e.message && e.message.includes('generic_err')) {
+                throw e
+            }
+
+            retries--
+        }     
+    } while(retries > 0)
+
+    throw new Error('Ran out of retries for a single query or a TX.')
 }
