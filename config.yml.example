@@ -16,12 +16,37 @@ interval:
 # The overseer contract containing the address and code_hash
 # address - the address of the overseer contract
 # code_hash - the code hash of the overseer contract
-overseer: 
-{ address: , code_hash: }
+overseer: { address: , code_hash: }
 
 # The markets to liquidate from. Each entry contains:
-# address - the address of the market to liquidate from
-# underlying_vk - The viewing key for the UNDERLYING token of the wallet that will execute the liquidation
-# code_hash - the code hash of the market contract
-markets:
- - { address: , underlying_vk: , code_hash: }
+# address - the address of the token to liquidate with
+# code_hash - the code hash of the token to liquidate with
+# underlying_vk - the viewing key for the token to liquidate with
+token: { address: , code_hash: , underlying_vk: }
+
+multicall:
+{ address: , code_hash: }
+
+# secret-4
+# { address: secret17k2x37ld48v29pat9qwq0lvdg5k2qsy0unt54d, code_hash: d8fcff74ec4165391c0999410b679a24ff9446d4d4518807c5ca29a8fbe554c9 }
+
+# pulsar-2
+# { address: secret1y7sml6zm208ptv9lz6640h39nvr27gf8lgvwcx, code_hash: d8fcff74ec4165391c0999410b679a24ff9446d4d4518807c5ca29a8fbe554c9 }
+
+router:
+{ address: , code_hash: }
+
+# secret-4
+# { address: secret1re647lyue84k82j4a54gk9y7lmxg44w4j8zvg6, code_hash: DF5F3E7D91702AB8E62DEE61617B3CD9AA19501BC07DE7B67F7182C1955FE07A }
+
+# pulsar-2
+# { address: secret1g7lswpdcpx3wer07ydw3cza4pcm5kxu6qkp038, code_hash: d92956e6ec42a5d51485f3f9acc10f8efafbd1985496bd93287b7eb7ab934f96 }
+
+factory:
+{ address: , code_hash: }
+
+# secret-4
+# { address: secret18sq0ux28kt2z7dlze2mu57d3ua0u5ayzwp6v2r, code_hash: A616944687060EA30286BDDA81418FED399FE155741EFDDE7CDD9ADDFBA486DB }
+
+# pulsar-2
+# { address: secret1203futsqmxjjjk6rv8lvxmxlgwyje8jkf7ndxf, code_hash: A616944687060EA30286BDDA81418FED399FE155741EFDDE7CDD9ADDFBA486DB }
