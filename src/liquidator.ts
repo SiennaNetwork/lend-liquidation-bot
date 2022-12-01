@@ -1,20 +1,21 @@
 import {
     Scrt, LendOverseer, LendMarket, LendOverseerMarket,
-    LendMarketBorrower, PaginatedResponse, Snip20, Address,
-    Agent, ViewingKey, Pagination, Fee, CodeHash, ContractLink,
-    Multicall, AMMRouter, AMMFactory
+    LendMarketBorrower, PaginatedResponse, Address,
+    ViewingKey, Pagination, Fee, CodeHash, ContractLink,
+    AMMRouter, AMMFactory
 } from "siennajs"
 import BigNumber from 'bignumber.js'
-import fetch from 'node-fetch'
 
 import { LiquidationsManager } from './swap'
 import { retry, normalize_denom } from './utils'
+import { Storage } from './storage'
 
 BigNumber.config({
     EXPONENTIAL_AT: 1e9,
     ROUNDING_MODE: BigNumber.ROUND_DOWN
 })
 
+const PRICES_UPDATE_INTERVAL: number = 3 * 60 * 1000
 const LIQUIDATE_COST = 550_000
 const BLACKLISTED_SYMBOLS = ['LUNA', 'UST']
 
@@ -39,8 +40,8 @@ export interface TokenInfo {
 
 export interface Market {
     contract: LendMarket,
-    decimals: number,
     symbol: string,
+    decimals: number,
     underlying: ContractLink
 }
 
@@ -51,26 +52,20 @@ export interface Candidate {
     market_info: LendOverseerMarket
 }
 
+export interface Loan {
+    candidate: Candidate,
+    market: Market
+}
+
 interface LendConstants {
     close_factor: number,
     premium: number
 }
 
-interface PriceResult {
-    symbol: string,
-    multiplier: string,
-    px: string,
-    request_id: string,
-    resolve_time: string
-}
-
 export class Liquidator {
-    private handle?: NodeJS.Timer
+    private liquidations_handle?: NodeJS.Timer
+    private prices_update_handle?: NodeJS.Timer
     private is_executing: boolean = false
-    private prices: Record<string, number> = { }
-    private current_height = 0
-    private user_balance = new BigNumber(0)
-    private multicall: Multicall
 
     static async create(config: Config): Promise<Liquidator> {
         const chain = new Scrt(config.chain_id, { url: config.api_url });
@@ -98,8 +93,8 @@ export class Liquidator {
 
             const m: Market = {
                 contract,
-                decimals: market.decimals,
                 symbol: market.symbol,
+                decimals: market.decimals,
                 underlying: await contract.getUnderlyingAsset()
             }
 
@@ -109,48 +104,48 @@ export class Liquidator {
         const price_symbols = new Set(all_markets.map(x => x.symbol))
         price_symbols.add('SCRT') // We always need SCRT, in order to check gas costs
 
+        const storage = await Storage.init(client, config, price_symbols)
+
         const router = new AMMRouter(client, config.router.address, config.router.code_hash)
         router.supportedTokens = await router.getSupportedTokens()
 
         const factory = new AMMFactory['v2'](client, config.factory.address, config.factory.code_hash)
         const manager = await LiquidationsManager.init(router, factory, markets, config.token)
 
-        const instance = new this(
-            client,
+        console.info(`Operating with balance: ${storage.user_balance}`)
+
+        return new this(
             config,
             markets,
-            [...price_symbols],
             constants,
+            storage,
             manager
         )
-
-        await instance.update_user_balance()
-        console.info(`Operating with balance: ${instance.user_balance}`)
-
-        return instance
     }
     
     private constructor(
-        private client: Agent,
         private config: Config,
         private markets: Market[],
-        private price_symbols: string[],
         private constants: LendConstants,
+        private storage: Storage,
         private manager: LiquidationsManager
-    ) {
-        this.multicall = new Multicall(client, config.multicall.address, config.multicall.code_hash)
-    }
+    ) { }
 
     start() {
-        this.handle = setInterval(
+        this.prices_update_handle = setInterval(
+            async () => this.storage.update_prices(),
+            PRICES_UPDATE_INTERVAL
+        )
+        this.liquidations_handle = setInterval(
             async () => this.run_liquidations_round(),
             this.config.interval
         )
     }
 
     stop() {
-        if (this.handle) {
-            clearInterval(this.handle)
+        if (this.liquidations_handle) {
+            clearInterval(this.liquidations_handle)
+            clearInterval(this.prices_update_handle)
         }
     }
 
@@ -163,8 +158,7 @@ export class Liquidator {
             return
         }
 
-
-        if (this.user_balance.isZero()) {
+        if (this.storage.user_balance.isZero()) {
             console.info('Ran out of balance. Terminating...')
             this.stop()
 
@@ -174,37 +168,26 @@ export class Liquidator {
         this.is_executing = true
 
         try {
-            const height = await this.client.chain?.height
-
-            if (!height) {
-                throw new Error("Couldn't fetch current block height.")
-            }
-
-            this.current_height = height
-            await this.fetch_prices()
+            await this.storage.update_block_height()
     
             const candidates = await Promise.all(this.markets.map(x => this.market_candidate(x)))
-            let best_loan: Candidate | null = candidates[0]
-            let index = -1
-    
-            candidates.forEach((loan, i) => {
-                if (!loan)
-                    return
-    
-                if (!best_loan || best_loan.seizable_usd.lt(loan.seizable_usd)) {
-                    best_loan = loan
-                    index = i
+            const loans: Loan[] = []
+
+            for(const [i, candidate] of candidates.entries()) {
+                if (candidate) {
+                    loans.push({
+                        candidate,
+                        market: this.markets[i]
+                    })
                 }
-            })
-    
-            if (!best_loan) {
-                console.info("Couldn't find a good loan to liquidate this round...")
-    
-                return
             }
 
-            await this.manager.liquidate(this.markets[index], best_loan)
-            await this.update_user_balance()
+            const best_loan = await this.best_loan(loans)
+
+            if (best_loan) {
+                await this.manager.liquidate(best_loan)
+                await this.storage.update_user_balance()
+            }
         } catch (e: any) {
             console.error(`Caught an error during liquidations round: ${JSON.stringify(e, null, 2)}`)
 
@@ -216,23 +199,16 @@ export class Liquidator {
         }
     }
 
-    private async fetch_prices() {
-        const symbols = this.price_symbols.map(x => `symbols=${x}`)
-        
-        const resp = await fetch(`${this.config.band_url}/oracle/v1/request_prices?${symbols.join('&')}`)
-        const prices: {price_results: PriceResult[]} = await resp.json()
-
-        prices.price_results.forEach((x: any) => {
-            const price = new BigNumber(x.px).dividedBy(x.multiplier).toNumber()
-            this.prices[x.symbol] = price
-        })
+    private async best_loan(candidates: Loan[]): Promise<Loan | null> {
+        //const payable = await Promise.all(candidates.map(x => this.manager.payable(x)))
+        process.exit(0)
     }
 
     private async market_candidate(market: Market): Promise<Candidate | null> {
         const candidates = await fetch_all_pages(
             async (page) => {
                 const result = await retry(() =>
-                    market.contract.getBorrowers(page, this.current_height)
+                    market.contract.getBorrowers(page, this.storage.block_height)
                 )
 
                 // Yes, we've come down to this because secretjs returns a string when
@@ -267,12 +243,12 @@ export class Liquidator {
 
     private async find_best_candidate(market: Market, borrowers: LendMarketBorrower[]): Promise<Candidate | null> {
         const exchange_rate_request = retry(() =>
-            market.contract.getExchangeRate(this.current_height)
+            market.contract.getExchangeRate(this.storage.block_height)
         )
 
         const sort_by_price = (a: LendOverseerMarket, b: LendOverseerMarket) => {
-            const price_a = this.prices[a.symbol]
-            const price_b = this.prices[b.symbol]
+            const price_a = this.storage.prices[a.symbol]
+            const price_b = this.storage.prices[b.symbol]
 
             return price_b - price_a
         }
@@ -282,8 +258,8 @@ export class Liquidator {
             const payable = this.max_payable(borrower)
             
             return payable.multipliedBy(this.constants.premium)
-                .multipliedBy(this.prices[borrower.markets[0].symbol])
-                .dividedBy(this.prices[market.symbol])
+                .multipliedBy(this.storage.prices[borrower.markets[0].symbol])
+                .dividedBy(this.storage.prices[market.symbol])
         }
 
         borrowers.sort((a, b) => {
@@ -371,7 +347,7 @@ export class Liquidator {
                     borrower.id,
                     m.contract.address,
                     payable.toFixed(0),
-                    this.current_height
+                    this.storage.block_height
                 )
             )
 
@@ -384,7 +360,7 @@ export class Liquidator {
                     candidate: {
                         id: borrower.id,
                         payable,
-                        seizable_usd: normalize_denom(seizable.multipliedBy(this.prices[m.symbol]), m.decimals),
+                        seizable_usd: normalize_denom(seizable.multipliedBy(this.storage.prices[m.symbol]), m.decimals),
                         market_info: m
                     }
                 }
@@ -397,7 +373,7 @@ export class Liquidator {
 
             if(info.shortfall == '0') {
                 actual_payable = payable
-                actual_seizable_usd = normalize_denom(seizable.multipliedBy(this.prices[m.symbol]), m.decimals)
+                actual_seizable_usd = normalize_denom(seizable.multipliedBy(this.storage.prices[m.symbol]), m.decimals)
 
                 // We don't have to check further since this is the second best scenario that we've got.
                 done = true
@@ -406,18 +382,17 @@ export class Liquidator {
                 // liquidation to be successful and also decrease the seized amount by that percentage.
                 const actual_seizable = new BigNumber(info.seize_amount).minus(info.shortfall)
 
-                // TODO: can this be less than 0?
                 if (actual_seizable.isZero()) {
                     actual_payable = new BigNumber(0)
                     actual_seizable_usd = new BigNumber(0)
                 } else {
-                    const seizable_price = actual_seizable.multipliedBy(this.prices[m.symbol]).multipliedBy(exchange_rate)
-                    const borrowed_premium = new BigNumber(this.constants.premium).multipliedBy(this.prices[market.symbol])
+                    const seizable_price = actual_seizable.multipliedBy(this.storage.prices[m.symbol]).multipliedBy(exchange_rate)
+                    const borrowed_premium = new BigNumber(this.constants.premium).multipliedBy(this.storage.prices[market.symbol])
                 
                     actual_payable = seizable_price.dividedBy(borrowed_premium)
     
                     actual_seizable_usd = normalize_denom(
-                        actual_seizable.multipliedBy(this.prices[m.symbol]),
+                        actual_seizable.multipliedBy(this.storage.prices[m.symbol]),
                         m.decimals
                     )
                 }
@@ -444,23 +419,12 @@ export class Liquidator {
         }
     }
 
-    private async update_user_balance() {
-        const token = this.config.token
-        const token_contract = new Snip20(this.client, token.address, token.code_hash)
-
-        const balance = await retry(() =>
-            token_contract.getBalance(this.client.address!, token.underlying_vk)
-        )
-
-        this.user_balance = new BigNumber(balance)
-    }
-
     private max_payable(borrower: LendMarketBorrower): BigNumber {
         return new BigNumber(borrower.actual_balance).multipliedBy(this.constants.close_factor)
     }
 
     private liquidation_cost_usd(): BigNumber {
-        return normalize_denom(new BigNumber(LIQUIDATE_COST * this.prices['SCRT']), 6)
+        return normalize_denom(new BigNumber(LIQUIDATE_COST * this.storage.prices['SCRT']), 6)
     }
 }
 

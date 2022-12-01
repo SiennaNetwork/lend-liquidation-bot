@@ -4,9 +4,10 @@
   "main": "dist/index.js",
   "license": "MIT",
   "dependencies": {
+    "@waiting/base64": "^4.2.9",
     "bignumber.js": "^9.0.2",
     "node-fetch": "^2.6.7",
-    "siennajs": "https://github.com/SiennaNetwork/siennajs/releases/download/3.2.0/siennajs-3.2.0.tgz",
+    "siennajs": "https://github.com/SiennaNetwork/siennajs/releases/download/3.3.0/siennajs-3.3.0.tgz",
     "yaml": "^2.0.1"
   },
   "devDependencies": {
