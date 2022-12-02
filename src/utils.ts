@@ -17,12 +17,16 @@ export async function retry<T>(func: () => Promise<T>, retries: number = 5): Pro
                 if (e.stack)
                     console.error(`Trace: ${e.stack}`)
 
-                if (e.message.includes('generic_err'))
+                if (
+                    e.message.includes('generic_err') ||
+                    e.message.includes('parse_err')
+                ) {
                     throw e
+                }
             }
         }     
     } while(retries > 0)
-
+    
     throw new Error('Ran out of retries for a single query or a TX.')
 }
 

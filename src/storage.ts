@@ -2,15 +2,14 @@ import {
     ScrtAgent, Multicall, Address, ContractLink, TokenPair, Snip20
 } from 'siennajs'
 import { Config } from './liquidator'
-import { retry } from './utils'
 
 import { b64encode, b64decode } from '@waiting/base64'
 import BigNumber from 'bignumber.js'
 import fetch from 'node-fetch'
 
 const POOL_INFO_CACHE_TIME: number = 60 * 1000
-const DECIMALS_BATCH: number = 8
-const POOLS_BATCH: number = 5
+const DECIMALS_BATCH: number = 15
+const POOLS_BATCH: number = 10
 
 export interface PoolInfo {
     amount_0: BigNumber,

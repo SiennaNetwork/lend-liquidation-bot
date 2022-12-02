@@ -2,9 +2,10 @@ import {
     Scrt, LendOverseer, LendMarket, LendOverseerMarket,
     LendMarketBorrower, PaginatedResponse, Address,
     ViewingKey, Pagination, Fee, CodeHash, ContractLink,
-    AMMRouter, AMMFactory
+    AMMRouter, AMMFactory, Multicall, MultiQuery
 } from "siennajs"
 import BigNumber from 'bignumber.js'
+import { b64encode, b64decode } from '@waiting/base64'
 
 import { LiquidationsManager } from './swap'
 import { retry, normalize_denom } from './utils'
@@ -16,8 +17,9 @@ BigNumber.config({
 })
 
 const PRICES_UPDATE_INTERVAL: number = 3 * 60 * 1000
-const LIQUIDATE_COST = 550_000
-const BLACKLISTED_SYMBOLS = ['LUNA', 'UST']
+const LIQUIDATE_COST: number = 550_000
+const UNDERLYING_ASSET_BATCH: number = 15
+const BLACKLISTED_SYMBOLS: string[] = ['LUNA', 'UST']
 
 export interface Config {
     band_url: string,
@@ -62,6 +64,47 @@ interface LendConstants {
     premium: number
 }
 
+async function fetch_underlying_assets(
+    multicall: Multicall,
+    markets: LendOverseerMarket[]
+): Promise<ContractLink[]> {
+    const asset_requests = []
+    let buffer: LendOverseerMarket[] = []
+
+    for (const [i, market] of markets.entries()) {
+        buffer.push(market)
+
+        if (
+            buffer.length === UNDERLYING_ASSET_BATCH ||
+            (buffer.length > 0 && i == markets.length - 1)
+        ) {
+            const queries: MultiQuery[] = buffer.map(x => { return {
+                contract_address: x.contract.address,
+                code_hash: x.contract.code_hash,
+                query: b64encode(JSON.stringify({ underlying_asset: {} }))
+            }})
+            asset_requests.push(multicall.multiChain(queries))
+
+            buffer = []
+        }
+    }
+
+    const asset_results = await Promise.all(asset_requests)
+    const assets: ContractLink[] = []
+
+    for (const resp of asset_results) {
+        for (const result of resp) {
+            if (result.error) {
+                throw new Error(b64decode(result.error))
+            }
+
+            assets.push(JSON.parse(b64decode(result.data!)))
+        }
+    }
+    
+    return assets
+}
+
 export class Liquidator {
     private liquidations_handle?: NodeJS.Timer
     private prices_update_handle?: NodeJS.Timer
@@ -72,12 +115,7 @@ export class Liquidator {
         const client = await chain.getAgent({ mnemonic: config.mnemonic })
 
         const overseer = new LendOverseer(client, config.overseer.address, config.overseer.code_hash)
-
-        const overseer_config = await overseer.config()
-        const constants = {
-            close_factor: parseFloat(overseer_config.close_factor),
-            premium: parseFloat(overseer_config.premium)
-        }
+        const overseer_config_request = overseer.config()
 
         const all_markets = await fetch_all_pages(
             (page) => retry(() => overseer.getMarkets(page)),
@@ -85,9 +123,17 @@ export class Liquidator {
             (x) => !BLACKLISTED_SYMBOLS.includes(x.symbol)
         )
 
+        const price_symbols = new Set(all_markets.map(x => x.symbol))
+        price_symbols.add('SCRT') // We always need SCRT, in order to check gas costs
+
+        const storage_init = Storage.init(client, config, price_symbols)
+
+        const multicall = new Multicall(client, config.multicall.address, config.multicall.code_hash)
+        const assets = await fetch_underlying_assets(multicall, all_markets)
+
         const markets: Market[] = []
 
-        for(const market of all_markets) {
+        for(const [i, market] of all_markets.entries()) {
             const contract = new LendMarket(client, market.contract.address, market.contract.code_hash)
             contract.fees.liquidate = new Fee(LIQUIDATE_COST, 'uscrt')
 
@@ -95,22 +141,26 @@ export class Liquidator {
                 contract,
                 symbol: market.symbol,
                 decimals: market.decimals,
-                underlying: await contract.getUnderlyingAsset()
+                underlying: assets[i]
             }
 
             markets.push(m)
         }
 
-        const price_symbols = new Set(all_markets.map(x => x.symbol))
-        price_symbols.add('SCRT') // We always need SCRT, in order to check gas costs
-
-        const storage = await Storage.init(client, config, price_symbols)
-
         const router = new AMMRouter(client, config.router.address, config.router.code_hash)
-        router.supportedTokens = await router.getSupportedTokens()
-
         const factory = new AMMFactory['v2'](client, config.factory.address, config.factory.code_hash)
-        const manager = await LiquidationsManager.init(router, factory, markets, config.token)
+
+        const [storage, manager, overseer_config] = await Promise.all([
+            storage_init,
+            LiquidationsManager.init(router, factory, markets, config.token),
+            overseer_config_request,
+            router.getSupportedTokens()
+        ])
+
+        const constants = {
+            close_factor: parseFloat(overseer_config.close_factor),
+            premium: parseFloat(overseer_config.premium)
+        }
 
         console.info(`Operating with balance: ${storage.user_balance}`)
 
