@@ -6,10 +6,19 @@ import {
 import BigNumber from 'bignumber.js'
 
 import { Market, Loan } from './liquidator'
-import { retry, normalize_denom, raw_denom, percentage_decrease } from './utils'
+import {
+    retry, normalize_denom, decrease_by_percent,
+    clamp, percentage_diff
+} from './utils'
 import { Storage, PoolInfo } from './storage'
 
 type SwapRoute = ContractLink | AMMRouterHop[]
+
+export interface Payable {
+    input_amount: BigNumber
+    output_amount: BigNumber
+    price_impact: number
+}
 
 export class LiquidationsManager {
     static async init(
@@ -107,15 +116,23 @@ export class LiquidationsManager {
 
     async payable(
         storage: Storage,
-        { candidate, market }: Loan,
-        user_balance: BigNumber
-    ): Promise<BigNumber> {
+        { candidate, market }: Loan
+    ): Promise<Payable> {
         if (market.underlying.address === this.token.address) {
-            return user_balance
+            const amount = clamp(storage.user_balance, candidate.payable)
+
+            return {
+                input_amount: amount,
+                output_amount: amount,
+                price_impact: 0
+            }
         }
 
         const key = this.token.address + market.underlying.address
         const route = this.routes.get(key)
+
+        if (!route)
+            throw new Error(`Swap route with key ${key} not found.`)
 
         const pools = (from: Token, info: PoolInfo) => {
             if (getTokenId(info.pair.token_0) === getTokenId(from)) {
@@ -125,28 +142,35 @@ export class LiquidationsManager {
             return { offer: info.amount_1, ask: info.amount_0 }
         }
 
-        if (!route)
-            throw new Error(`Swap route with key ${key} not found.`)
-        else if (route_is_pair(route)) {
-            const [info, ...decimals] = await Promise.all([
-                storage.pool_cache.get(route),
-                storage.decimals_cache.get(this.token),
-                storage.decimals_cache.get(route)
-            ])
+        const decimals = await storage.decimals_cache.get_many([this.token, market.underlying])
+
+        let balance = normalize_denom(storage.user_balance, decimals[0])
+        const payable = normalize_denom(candidate.payable, decimals[1])
+
+        let balance_usd = balance.multipliedBy(storage.prices[storage.config.token.symbol])
+        const payable_usd = payable.multipliedBy(storage.prices[market.symbol])
+
+        // Add a 10 USD buffer, otherwise the difference is insignificatnt
+        if (balance_usd.gt(payable_usd.plus(10))) {
+            const diff = percentage_diff(balance_usd, payable_usd)
+
+            // Decrease based on the percentage difference of the liquidatable price vs user balance
+            // We do this so that we don't have to swap more than we need to
+            if (diff > 0) {
+                balance = balance.minus(decrease_by_percent(balance, diff, 100))
+                balance_usd = balance.multipliedBy(storage.prices[storage.config.token.symbol])
+            }
+        }
+
+        let output_amount: BigNumber
+
+        if (route_is_pair(route)) {
+            const info = await storage.pool_cache.get(route)
             const { offer, ask } = pools(customToken(route.address, route.code_hash), info)
 
-            const balance = normalize_denom(user_balance, decimals[0])
-            const payable = normalize_denom(candidate.payable, decimals[1])
-            
-            const amount = this.compute_offer_amount(offer, ask, payable)
-
-            if (amount > balance) {
-                return raw_denom(this.compute_swap(offer, ask, balance), 2)
-            }
-
-            return raw_denom(amount, decimals[0])
+            output_amount = this.compute_swap(offer, ask, balance)
         } else {
-            let amount = new BigNumber(0)
+            output_amount = balance
 
             const infos = await Promise.all(
                 route.map(x => storage.pool_cache.get({
@@ -159,10 +183,17 @@ export class LiquidationsManager {
                 const info = infos[i]
 
                 const { offer, ask } = pools(swap.from_token, info)
-                const result = this.compute_offer_amount(offer, ask, candidate.payable)
+                output_amount = this.compute_swap(offer, ask, output_amount)
             }
+        }
 
-            return amount
+        return {
+            input_amount: balance,
+            output_amount,
+            price_impact: percentage_diff(
+                balance_usd,
+                output_amount.multipliedBy(storage.prices[market.symbol])
+            )
         }
     }
 
@@ -218,7 +249,7 @@ export class LiquidationsManager {
 }
 
 function apply_fee(amount: BigNumber, fee: ExchangeFee) {
-    return percentage_decrease(amount, fee.nom, fee.denom)
+    return decrease_by_percent(amount, fee.nom, fee.denom)
 }
 
 function route_is_pair(route: any): route is ContractLink {

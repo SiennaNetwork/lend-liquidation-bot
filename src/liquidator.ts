@@ -36,8 +36,9 @@ export interface Config {
 
 export interface TokenInfo {
     address: Address,
-    underlying_vk: ViewingKey
     code_hash: CodeHash
+    symbol: string
+    underlying_vk: ViewingKey
 }
 
 export interface Market {
@@ -124,6 +125,7 @@ export class Liquidator {
         )
 
         const price_symbols = new Set(all_markets.map(x => x.symbol))
+        price_symbols.add(config.token.symbol)
         price_symbols.add('SCRT') // We always need SCRT, in order to check gas costs
 
         const storage_init = Storage.init(client, config, price_symbols)
@@ -165,7 +167,6 @@ export class Liquidator {
         console.info(`Operating with balance: ${storage.user_balance}`)
 
         return new this(
-            config,
             markets,
             constants,
             storage,
@@ -174,7 +175,6 @@ export class Liquidator {
     }
     
     private constructor(
-        private config: Config,
         private markets: Market[],
         private constants: LendConstants,
         private storage: Storage,
@@ -188,7 +188,7 @@ export class Liquidator {
         )
         this.liquidations_handle = setInterval(
             async () => this.run_liquidations_round(),
-            this.config.interval
+            this.storage.config.interval
         )
     }
 

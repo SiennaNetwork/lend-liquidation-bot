@@ -21,8 +21,9 @@ overseer: { address: , code_hash: }
 # The markets to liquidate from. Each entry contains:
 # address - the address of the token to liquidate with
 # code_hash - the code hash of the token to liquidate with
+# symbol - the token symbol as seen on https://data.bandprotocol.com/
 # underlying_vk - the viewing key for the token to liquidate with
-token: { address: , code_hash: , underlying_vk: }
+token: { address: , code_hash: , symbol: , underlying_vk: }
 
 multicall:
 { address: , code_hash: }

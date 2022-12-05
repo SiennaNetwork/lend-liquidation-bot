@@ -37,7 +37,7 @@ export class Storage {
         config: Config,
         price_symbols: Set<string>
     ): Promise<Storage> {
-        const instance = new this(client, config, price_symbols)
+        const instance = new this(config, client, price_symbols)
 
         await Promise.all([
             instance.update_block_height(),
@@ -49,8 +49,8 @@ export class Storage {
     }
 
     private constructor(
+        public config: Config,
         private client: ScrtAgent,
-        private config: Config,
         price_symbols: Set<string>
     ) {
         for (const symbol of price_symbols) {
