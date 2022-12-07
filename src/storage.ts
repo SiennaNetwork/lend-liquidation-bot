@@ -1,5 +1,6 @@
 import {
-    ScrtAgent, Multicall, Address, ContractLink, TokenPair, Snip20
+    SecretJS, ScrtAgent, Multicall, Address,
+    ContractLink, TokenPair, Snip20
 } from 'siennajs'
 import { Config } from './liquidator'
 
@@ -7,7 +8,7 @@ import { b64encode, b64decode } from '@waiting/base64'
 import BigNumber from 'bignumber.js'
 import fetch from 'node-fetch'
 
-const POOL_INFO_CACHE_TIME: number = 60 * 1000
+const POOL_INFO_CACHE_TIME: number = 3 * 60 * 1000
 const DECIMALS_BATCH: number = 15
 const POOLS_BATCH: number = 10
 
@@ -50,7 +51,7 @@ export class Storage {
 
     private constructor(
         public config: Config,
-        private client: ScrtAgent,
+        public client: ScrtAgent,
         price_symbols: Set<string>
     ) {
         for (const symbol of price_symbols) {

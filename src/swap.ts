@@ -1,23 +1,32 @@
 import {
     ContractLink, AMMRouter, AMMFactory, AMMRouterHop,
-    AMMRouterPair, ExchangeSettings, ExchangeFee, Token,
-    customToken, getTokenId
-} from "siennajs"
+    AMMRouterPair, AMMExchange, ExchangeSettings, ExchangeFee,
+    Token, TokenAmount, customToken, getTokenId, SecretJS
+} from 'siennajs'
 import BigNumber from 'bignumber.js'
 
 import { Market, Loan } from './liquidator'
 import {
-    retry, normalize_denom, decrease_by_percent,
+    normalize_denom, decrease_by_percent,
     clamp, percentage_diff
-} from './utils'
+} from './math'
+import * as Tx from './tx'
 import { Storage, PoolInfo } from './storage'
 
+const TX_RETRY_COUNT: number = 3
+
 type SwapRoute = ContractLink | AMMRouterHop[]
+
+export interface Liquidation {
+    loan: Loan,
+    payable: Payable
+}
 
 export interface Payable {
     input_amount: BigNumber
     output_amount: BigNumber
     price_impact: number
+    route: SwapRoute | undefined
 }
 
 export class LiquidationsManager {
@@ -96,22 +105,74 @@ export class LiquidationsManager {
         private fees: ExchangeSettings
     ) { }
 
-    async liquidate({ candidate, market }: Loan) {
-        const amount = candidate.payable.decimalPlaces(0, BigNumber.ROUND_DOWN)
+    async liquidate(storage: Storage, liquidation: Liquidation) {
+        const { candidate, market } = liquidation.loan
+        const payable = liquidation.payable
 
-        const result: any = await retry(() => {
+        const amount = payable.input_amount.minus(1).decimalPlaces(0, BigNumber.ROUND_DOWN)
+
+        let liquidate_amount: string
+
+        if(payable.route) {
+            let resp: SecretJS.TxResponse
+
+            if (route_is_pair(payable.route)) {
+                const pair = new AMMExchange(storage.client, payable.route.address, payable.route.code_hash)
+
+                resp = await Tx.retry(
+                    () => pair.swap(
+                        new TokenAmount(
+                            customToken(this.token.address, this.token.code_hash),
+                            amount.toString(),
+                        ),
+                        payable.output_amount.toFixed(0, BigNumber.ROUND_DOWN)
+                    ),
+                    TX_RETRY_COUNT
+                ) as SecretJS.TxResponse
+            } else {
+                const router = new AMMRouter(
+                    storage.client,
+                    storage.config.router.address,
+                    storage.config.router.code_hash
+                )
+                
+                const route = payable.route // Appeasing TS...
+                resp = await Tx.retry(
+                    () => router.swap(
+                        route,
+                        amount.toString(),
+                        payable.output_amount.toFixed(0, BigNumber.ROUND_DOWN)
+                    ),
+                    TX_RETRY_COUNT
+                ) as SecretJS.TxResponse
+            }
+
+            Tx.assert_resp_ok(resp)
+
+            const swap_amount = new BigNumber(Tx.get_value(resp, 'return_amount')!)
+            liquidate_amount = clamp(swap_amount, candidate.payable).toString()
+        } else {
+            liquidate_amount = amount.toString()
+        }
+
+        const resp = await Tx.retry(() => {
                 return market.contract.liquidate(
-                    amount.toString(),
+                    liquidate_amount,
                     candidate.id,
-                    candidate.market_info.contract.address
+                    candidate.market_info.contract.address,
+                    market.underlying.address
                 )   
             },
-            3
-        )
+            TX_RETRY_COUNT
+        ) as SecretJS.TxResponse
 
-        const repaid_amount = normalize_denom(amount, market.decimals)
+        Tx.assert_resp_ok(resp)
+        
+        const repaid_amount = normalize_denom(new BigNumber(liquidate_amount), market.decimals)
         console.info(`Successfully liquidated a loan by repaying ${repaid_amount.toString()} ${market.symbol} and seized ~$${candidate.seizable_usd} worth of ${candidate.market_info.symbol} (transfered to market: ${candidate.market_info.contract.address})!`)
-        console.info(`TX hash: ${result.transactionHash}`)
+        console.info(`TX hash: ${resp.transactionHash}`)
+
+        await storage.update_user_balance()
     }
 
     async payable(
@@ -124,7 +185,8 @@ export class LiquidationsManager {
             return {
                 input_amount: amount,
                 output_amount: amount,
-                price_impact: 0
+                price_impact: 0,
+                route: undefined
             }
         }
 
@@ -193,30 +255,9 @@ export class LiquidationsManager {
             price_impact: percentage_diff(
                 balance_usd,
                 output_amount.multipliedBy(storage.prices[market.symbol])
-            )
+            ),
+            route
         }
-    }
-
-    private compute_offer_amount(
-        offer_pool: BigNumber,
-        ask_pool: BigNumber,
-        ask_amount: BigNumber
-    ): BigNumber {
-        const cp = offer_pool.multipliedBy(ask_pool)
-    
-        let offer_amount = cp.dividedBy(ask_pool.minus(ask_amount)).minus(offer_pool)
-        //const spread_amount = offer_amount.multipliedBy(ask_pool.dividedBy(offer_pool)).minus(ask_amount)
-    
-        // Could do this with a single call, but keeping it like this in
-        // order to stay closer to the actual calculations in the contract
-        const swap_commission = apply_fee(offer_amount, this.fees.swap_fee)
-        const sienna_commission = apply_fee(offer_amount, this.fees.sienna_fee)
-    
-        const total_commission = swap_commission.plus(sienna_commission)
-    
-        offer_amount = offer_amount.plus(total_commission)
-
-        return offer_amount
     }
 
     private compute_swap(

@@ -11,12 +11,12 @@ api_url:
 band_url: 
 
 # The frequency (in milliseconds) at which the bot will run the liquidation logic.
-interval: 
+interval: 120000
 
-# The overseer contract containing the address and code_hash
-# address - the address of the overseer contract
-# code_hash - the code hash of the overseer contract
-overseer: { address: , code_hash: }
+# The maximum percentage of the price deviance when calculating a potential swap.
+# Any swaps with difference between the input and output price that is more than
+# the specified amount will not be executed. Must be a number between 0 - 1.
+max_price_impact: 0.05
 
 # The markets to liquidate from. Each entry contains:
 # address - the address of the token to liquidate with
@@ -24,6 +24,17 @@ overseer: { address: , code_hash: }
 # symbol - the token symbol as seen on https://data.bandprotocol.com/
 # underlying_vk - the viewing key for the token to liquidate with
 token: { address: , code_hash: , symbol: , underlying_vk: }
+
+# The overseer contract containing the address and code_hash
+# address - the address of the overseer contract
+# code_hash - the code hash of the overseer contract
+overseer: { address: , code_hash: }
+
+# secret-4
+# { address: secret1pf88n9hm64mn58aw48jxfs2fsvzr07svnrrdlv, code_hash: BD573658377D724C691715E267C4765B4643999E35F2C143F03D57F00FDE4454 }
+
+# pulsar-2
+# { address: secret1qramp0vac3xk4982taem550w9k6zcnclcgy5cf, code_hash: BD573658377D724C691715E267C4765B4643999E35F2C143F03D57F00FDE4454 }
 
 multicall:
 { address: , code_hash: }

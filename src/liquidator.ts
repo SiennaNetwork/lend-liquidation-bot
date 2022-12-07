@@ -3,12 +3,13 @@ import {
     LendMarketBorrower, PaginatedResponse, Address,
     ViewingKey, Pagination, Fee, CodeHash, ContractLink,
     AMMRouter, AMMFactory, Multicall, MultiQuery
-} from "siennajs"
+} from 'siennajs'
 import BigNumber from 'bignumber.js'
 import { b64encode, b64decode } from '@waiting/base64'
 
-import { LiquidationsManager } from './swap'
-import { retry, normalize_denom } from './utils'
+import { LiquidationsManager, Liquidation } from './swap'
+import { normalize_denom } from './math'
+import * as Tx from './tx'
 import { Storage } from './storage'
 
 BigNumber.config({
@@ -22,46 +23,47 @@ const UNDERLYING_ASSET_BATCH: number = 15
 const BLACKLISTED_SYMBOLS: string[] = ['LUNA', 'UST']
 
 export interface Config {
-    band_url: string,
-    api_url: string,
-    chain_id: string,
-    mnemonic: string,
-    interval: number,
-    overseer: ContractLink,
-    multicall: ContractLink,
-    router: ContractLink,
-    factory: ContractLink,
+    band_url: string
+    api_url: string
+    chain_id: string
+    mnemonic: string
+    interval: number
+    max_price_impact: number
+    overseer: ContractLink
+    multicall: ContractLink
+    router: ContractLink
+    factory: ContractLink
     token: TokenInfo
 }
 
 export interface TokenInfo {
-    address: Address,
+    address: Address
     code_hash: CodeHash
     symbol: string
     underlying_vk: ViewingKey
 }
 
 export interface Market {
-    contract: LendMarket,
-    symbol: string,
-    decimals: number,
+    contract: LendMarket
+    symbol: string
+    decimals: number
     underlying: ContractLink
 }
 
 export interface Candidate {
-    id: string,
-    payable: BigNumber,
-    seizable_usd: BigNumber,
+    id: string
+    payable: BigNumber
+    seizable_usd: BigNumber
     market_info: LendOverseerMarket
 }
 
 export interface Loan {
-    candidate: Candidate,
+    candidate: Candidate
     market: Market
 }
 
 interface LendConstants {
-    close_factor: number,
+    close_factor: number
     premium: number
 }
 
@@ -119,7 +121,7 @@ export class Liquidator {
         const overseer_config_request = overseer.config()
 
         const all_markets = await fetch_all_pages(
-            (page) => retry(() => overseer.getMarkets(page)),
+            (page) => Tx.retry(() => overseer.getMarkets(page)),
             30,
             (x) => !BLACKLISTED_SYMBOLS.includes(x.symbol)
         )
@@ -232,11 +234,10 @@ export class Liquidator {
                 }
             }
 
-            const best_loan = await this.best_loan(loans)
+            const liquidation = await this.choose_liquidation(loans)
 
-            if (best_loan) {
-                await this.manager.liquidate(best_loan)
-                await this.storage.update_user_balance()
+            if (liquidation) {
+                await this.manager.liquidate(this.storage, liquidation)
             }
         } catch (e: any) {
             console.error(`Caught an error during liquidations round: ${JSON.stringify(e, null, 2)}`)
@@ -249,15 +250,35 @@ export class Liquidator {
         }
     }
 
-    private async best_loan(candidates: Loan[]): Promise<Loan | null> {
-        //const payable = await Promise.all(candidates.map(x => this.manager.payable(x)))
-        process.exit(0)
+    private async choose_liquidation(candidates: Loan[]): Promise<Liquidation | null> {
+        const payables = await Promise.all(
+            candidates.map(x => this.manager.payable(this.storage, x))
+        )
+
+        let current: number | null = null
+
+        for (const [i, payable] of payables.entries()) {
+            if (payable.price_impact > this.storage.config.max_price_impact)
+                continue
+
+            if (!current || payable.input_amount > payables[current].input_amount)
+                current = i
+        }
+
+        if (current) {
+            return {
+                loan: candidates[current],
+                payable: payables[current]
+            }
+        }
+
+        return null
     }
 
     private async market_candidate(market: Market): Promise<Candidate | null> {
         const candidates = await fetch_all_pages(
             async (page) => {
-                const result = await retry(() =>
+                const result = await Tx.retry(() =>
                     market.contract.getBorrowers(page, this.storage.block_height)
                 )
 
@@ -292,7 +313,7 @@ export class Liquidator {
     }
 
     private async find_best_candidate(market: Market, borrowers: LendMarketBorrower[]): Promise<Candidate | null> {
-        const exchange_rate_request = retry(() =>
+        const exchange_rate_request = Tx.retry(() =>
             market.contract.getExchangeRate(this.storage.block_height)
         )
 
@@ -392,7 +413,7 @@ export class Liquidator {
 
             // Values are in sl-tokens so we need to convert to
             // the underlying in order for them to be useful here.
-            const info = await retry(() =>
+            const info = await Tx.retry(() =>
                 market.contract.simulateLiquidation(
                     borrower.id,
                     m.contract.address,

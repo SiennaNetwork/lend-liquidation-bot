@@ -1,4 +1,4 @@
-import BigNumber from 'bignumber.js'
+import { SecretJS } from "siennajs"
 
 export async function retry<T>(func: () => Promise<T>, retries: number = 5): Promise<T> {
     do {
@@ -30,35 +30,24 @@ export async function retry<T>(func: () => Promise<T>, retries: number = 5): Pro
     throw new Error('Ran out of retries for a single query or a TX.')
 }
 
-export function normalize_denom(amount: BigNumber, decimals: number): BigNumber {
-    return amount.dividedBy(10 ** decimals)
+export function assert_resp_ok(resp: SecretJS.TxResponse) {
+    if(resp.code != 0)
+        throw new Error(`TX (${resp.transactionHash}) error: ${resp.rawLog}`)
 }
 
-export function raw_denom(amount: BigNumber, decimals: number): BigNumber {
-    return amount.multipliedBy(10 ** decimals)
-}
+export function get_value(resp: SecretJS.TxResponse, key: string): string | undefined {
+    if (!resp.jsonLog || resp.jsonLog.length == 0)
+        return undefined
 
-export function decrease_by_percent(
-    amount: BigNumber,
-    nom: BigNumber.Value,
-    denom: BigNumber.Value
-): BigNumber {
-    return amount.multipliedBy(nom).dividedBy(denom)
-}
+    const wasm = resp.jsonLog[0].events.find(x => x.type === 'wasm')
+    const attrs = wasm?.attributes ?? []
 
-export function percentage_diff(initial: BigNumber, final: BigNumber): number {
-    if (final >= initial) {
-        return 0
+    for (let i = attrs.length - 1; i >= 0; i--) {
+        const attr = attrs[i]
+
+        if (attr.key === key)
+            return attr.value
     }
 
-    const diff = initial.minus(final)
-    
-    return diff.dividedBy(initial).multipliedBy(100).toNumber()
-}
-
-export function clamp(val: BigNumber, max: BigNumber): BigNumber {
-    if (val.gt(max))
-        return max
-
-    return val
+    return undefined
 }
