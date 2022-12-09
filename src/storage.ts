@@ -1,8 +1,10 @@
 import {
-    SecretJS, ScrtAgent, Multicall, Address,
-    ContractLink, TokenPair, Snip20
+    ScrtAgent, Multicall, Address, ContractLink,
+    TokenPair, Snip20, Permit
 } from 'siennajs'
 import { Config } from './liquidator'
+import { normalize_denom } from './math'
+import * as Tx from './tx'
 
 import { b64encode, b64decode } from '@waiting/base64'
 import BigNumber from 'bignumber.js'
@@ -32,12 +34,16 @@ export class Storage {
     public prices: Record<string, number> = { }
     public block_height: number = 0
     public user_balance = new BigNumber(0)
+    public permits = new Map<string, Permit<any>>
 
     public static async init(
         client: ScrtAgent,
         config: Config,
         price_symbols: Set<string>
     ): Promise<Storage> {
+        price_symbols.add(config.token.symbol)
+        price_symbols.add('SCRT') // We always need SCRT, in order to check gas costs
+
         const instance = new this(config, client, price_symbols)
 
         await Promise.all([
@@ -84,7 +90,22 @@ export class Storage {
         )
     }
 
-    public async update_prices() {
+    gas_cost_usd(amount: BigNumber.Value): BigNumber {
+        return this.usd_value(amount, 'SCRT', 6)
+    }
+
+    usd_value(
+        amount: BigNumber.Value,
+        symbol: string,
+        decimals: number
+    ): BigNumber {
+        return normalize_denom(
+            new BigNumber(this.prices[symbol]).multipliedBy(amount),
+            decimals
+        )
+    }
+
+    async update_prices() {
         const symbols = Object.keys(this.prices).map(x => `symbols=${x}`)
         
         const resp = await fetch(`${this.config.band_url}/oracle/v1/request_prices?${symbols.join('&')}`)
@@ -96,7 +117,7 @@ export class Storage {
         })
     }
 
-    public async update_block_height() {
+    async update_block_height() {
         const height = await this.client.chain?.height
 
         if (!height) {
@@ -106,11 +127,11 @@ export class Storage {
         this.block_height = height
     }
 
-    public async update_user_balance() {
+    async update_user_balance() {
         const token = this.config.token
         const token_contract = new Snip20(this.client, token.address, token.code_hash)
 
-        const balance = await retry(() =>
+        const balance = await Tx.retry(() =>
             token_contract.getBalance(this.client.address!, token.underlying_vk)
         )
 

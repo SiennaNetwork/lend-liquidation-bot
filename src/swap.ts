@@ -1,7 +1,8 @@
 import {
-    ContractLink, AMMRouter, AMMFactory, AMMRouterHop,
+    ContractLink, AMMRouter, AMMFactory, AMMRouterHop, LendAuth,
     AMMRouterPair, AMMExchange, ExchangeSettings, ExchangeFee,
-    Token, TokenAmount, customToken, getTokenId, SecretJS
+    Token, TokenAmount, LendMarket, LendOverseerMarket,
+    customToken, getTokenId, SecretJS
 } from 'siennajs'
 import BigNumber from 'bignumber.js'
 
@@ -12,6 +13,7 @@ import {
 } from './math'
 import * as Tx from './tx'
 import { Storage, PoolInfo } from './storage'
+import { SecretJsSigner } from './secretjs_signer'
 
 const TX_RETRY_COUNT: number = 3
 
@@ -49,8 +51,11 @@ export class LiquidationsManager {
         ))
     
         const token = customToken(token_info.address, token_info.code_hash)
+        let index = 0
 
-        for (const market of markets) {
+        while (index < markets.length) {
+            const market = markets[index]
+
             if (market.underlying.address === token_info.address)
                 continue
 
@@ -94,6 +99,13 @@ export class LiquidationsManager {
                     break
                 }
             }
+
+            if (has_route.some((x) => x === false)){
+                const [removed] = markets.splice(index, 1)
+                console.info(`Couldn't find a swap route for the ${removed.symbol} market (${removed.contract.address}) and will not perform liquidations on it.`)
+            }
+            else
+                index++
         }
 
         return new this(token_info, routes, await fee_request)
@@ -114,42 +126,15 @@ export class LiquidationsManager {
         let liquidate_amount: string
 
         if(payable.route) {
-            let resp: SecretJS.TxResponse
-
-            if (route_is_pair(payable.route)) {
-                const pair = new AMMExchange(storage.client, payable.route.address, payable.route.code_hash)
-
-                resp = await Tx.retry(
-                    () => pair.swap(
-                        new TokenAmount(
-                            customToken(this.token.address, this.token.code_hash),
-                            amount.toString(),
-                        ),
-                        payable.output_amount.toFixed(0, BigNumber.ROUND_DOWN)
-                    ),
-                    TX_RETRY_COUNT
-                ) as SecretJS.TxResponse
-            } else {
-                const router = new AMMRouter(
-                    storage.client,
-                    storage.config.router.address,
-                    storage.config.router.code_hash
-                )
-                
-                const route = payable.route // Appeasing TS...
-                resp = await Tx.retry(
-                    () => router.swap(
-                        route,
-                        amount.toString(),
-                        payable.output_amount.toFixed(0, BigNumber.ROUND_DOWN)
-                    ),
-                    TX_RETRY_COUNT
-                ) as SecretJS.TxResponse
-            }
-
-            Tx.assert_resp_ok(resp)
-
+            const resp = await this.execute_swap(
+                storage,
+                payable.route,
+                this.token,
+                amount.toString(),
+                payable.output_amount.toFixed(0, BigNumber.ROUND_DOWN)
+            )
             const swap_amount = new BigNumber(Tx.get_value(resp, 'return_amount')!)
+
             liquidate_amount = clamp(swap_amount, candidate.payable).toString()
         } else {
             liquidate_amount = amount.toString()
@@ -172,7 +157,11 @@ export class LiquidationsManager {
         console.info(`Successfully liquidated a loan by repaying ${repaid_amount.toString()} ${market.symbol} and seized ~$${candidate.seizable_usd} worth of ${candidate.market_info.symbol} (transfered to market: ${candidate.market_info.contract.address})!`)
         console.info(`TX hash: ${resp.transactionHash}`)
 
-        await storage.update_user_balance()
+        try {
+            await this.withdraw_tokens(storage, candidate.market_info)
+        } finally {
+            await storage.update_user_balance()
+        }
     }
 
     async payable(
@@ -258,6 +247,100 @@ export class LiquidationsManager {
             ),
             route
         }
+    }
+
+    private async withdraw_tokens(storage: Storage, market: LendOverseerMarket) {
+        const contract = new LendMarket(
+            storage.client,
+            market.contract.address,
+            market.contract.code_hash
+        )
+
+        const [state, balance] = await Promise.all([
+            contract.getState(storage.block_height),
+            contract.getUnderlyingBalance(
+                LendAuth.permit(new SecretJsSigner(storage))
+            )
+        ])
+
+        const market_supply = new BigNumber(state.underlying_balance)
+        const user_balance = new BigNumber(balance)
+
+        const amount = clamp(user_balance, market_supply)
+        const value = storage.usd_value(amount, market.symbol, market.decimals)
+        const cost = storage.gas_cost_usd(
+            storage.config.gas_costs.withdraw
+        )
+
+        if (value.lt(cost)) {
+            console.log(`Skipping redeeming ${balance} ${market.symbol} because the market supply is insufficient or its value is less than the cost of the TX.`)
+
+            return
+        }
+
+        const resp = await Tx.retry(() => {
+            return contract.redeemFromUnderlying(
+                amount.toString()
+            )},
+            TX_RETRY_COUNT
+        ) as SecretJS.TxResponse
+
+        Tx.assert_resp_ok(resp)
+        const withdrawn_amount = Tx.get_value(resp, 'redeem_amount')!
+        
+        const route = this.routes.get(market.contract.address + this.token.address)
+
+        if (!route) {
+            console.info(`Transferred ${withdrawn_amount} ${market.symbol} to wallet but no route exists to swap them back to ${storage.config.token.symbol}`)
+
+            return
+        }
+
+        await this.execute_swap(storage, route, market.contract, withdrawn_amount)
+    }
+
+    private async execute_swap(
+        storage: Storage,
+        route: SwapRoute,
+        from_token: ContractLink,
+        swap_amount: string,
+        expected_return?: string
+    ): Promise<SecretJS.TxResponse> {
+        let resp: SecretJS.TxResponse
+
+        if (route_is_pair(route)) {
+            const pair = new AMMExchange(storage.client, route.address, route.code_hash)
+
+            resp = await Tx.retry(
+                () => pair.swap(
+                    new TokenAmount(
+                        customToken(from_token.address, from_token.code_hash),
+                        swap_amount,
+                    ),
+                    expected_return
+                ),
+                TX_RETRY_COUNT
+            ) as SecretJS.TxResponse
+        } else {
+            const router = new AMMRouter(
+                storage.client,
+                storage.config.router.address,
+                storage.config.router.code_hash
+            )
+            
+            resp = await Tx.retry(
+                () => router.swap(
+                    route,
+                    swap_amount,
+                    expected_return
+                ),
+                TX_RETRY_COUNT
+            ) as SecretJS.TxResponse
+        }
+
+        Tx.assert_resp_ok(resp)
+
+        return resp
     }
 
     private compute_swap(

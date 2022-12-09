@@ -18,6 +18,15 @@ interval: 120000
 # the specified amount will not be executed. Must be a number between 0 - 1.
 max_price_impact: 0.05
 
+# Gas costs of the messages that the bot executes. It uses those
+# to calculate the total cost of a liquidation in order to skip
+# running liquidations that would yield less than the cost of
+# executing those messages.
+gas_costs:
+  swap: 260000
+  liquidate: 900000
+  withdraw: 200000
+
 # The markets to liquidate from. Each entry contains:
 # address - the address of the token to liquidate with
 # code_hash - the code hash of the token to liquidate with

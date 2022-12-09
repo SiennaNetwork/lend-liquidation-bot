@@ -17,9 +17,8 @@ export function decrease_by_percent(
 }
 
 export function percentage_diff(initial: BigNumber, final: BigNumber): number {
-    if (final >= initial) {
+    if (final >= initial)
         return 0
-    }
 
     const diff = initial.minus(final)
     

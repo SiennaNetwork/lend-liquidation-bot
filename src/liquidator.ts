@@ -18,9 +18,14 @@ BigNumber.config({
 })
 
 const PRICES_UPDATE_INTERVAL: number = 3 * 60 * 1000
-const LIQUIDATE_COST: number = 550_000
 const UNDERLYING_ASSET_BATCH: number = 15
 const BLACKLISTED_SYMBOLS: string[] = ['LUNA', 'UST']
+
+export interface GasCosts {
+    swap: number
+    liquidate: number
+    withdraw: number
+}
 
 export interface Config {
     band_url: string
@@ -34,6 +39,7 @@ export interface Config {
     router: ContractLink
     factory: ContractLink
     token: TokenInfo
+    gas_costs: GasCosts
 }
 
 export interface TokenInfo {
@@ -127,9 +133,6 @@ export class Liquidator {
         )
 
         const price_symbols = new Set(all_markets.map(x => x.symbol))
-        price_symbols.add(config.token.symbol)
-        price_symbols.add('SCRT') // We always need SCRT, in order to check gas costs
-
         const storage_init = Storage.init(client, config, price_symbols)
 
         const multicall = new Multicall(client, config.multicall.address, config.multicall.code_hash)
@@ -139,7 +142,7 @@ export class Liquidator {
 
         for(const [i, market] of all_markets.entries()) {
             const contract = new LendMarket(client, market.contract.address, market.contract.code_hash)
-            contract.fees.liquidate = new Fee(LIQUIDATE_COST, 'uscrt')
+            contract.fees.liquidate = new Fee(config.gas_costs.liquidate, 'uscrt')
 
             const m: Market = {
                 contract,
@@ -157,8 +160,7 @@ export class Liquidator {
         const [storage, manager, overseer_config] = await Promise.all([
             storage_init,
             LiquidationsManager.init(router, factory, markets, config.token),
-            overseer_config_request,
-            router.getSupportedTokens()
+            overseer_config_request
         ])
 
         const constants = {
@@ -431,7 +433,7 @@ export class Liquidator {
                     candidate: {
                         id: borrower.id,
                         payable,
-                        seizable_usd: normalize_denom(seizable.multipliedBy(this.storage.prices[m.symbol]), m.decimals),
+                        seizable_usd: this.storage.usd_value(seizable, m.symbol, m.decimals),
                         market_info: m
                     }
                 }
@@ -444,7 +446,7 @@ export class Liquidator {
 
             if(info.shortfall == '0') {
                 actual_payable = payable
-                actual_seizable_usd = normalize_denom(seizable.multipliedBy(this.storage.prices[m.symbol]), m.decimals)
+                actual_seizable_usd = this.storage.usd_value(seizable, m.symbol, m.decimals)
 
                 // We don't have to check further since this is the second best scenario that we've got.
                 done = true
@@ -462,10 +464,7 @@ export class Liquidator {
                 
                     actual_payable = seizable_price.dividedBy(borrowed_premium)
     
-                    actual_seizable_usd = normalize_denom(
-                        actual_seizable.multipliedBy(this.storage.prices[m.symbol]),
-                        m.decimals
-                    )
+                    actual_seizable_usd = this.storage.usd_value(actual_seizable, m.symbol, m.decimals)
                 }
             }
 
@@ -495,7 +494,9 @@ export class Liquidator {
     }
 
     private liquidation_cost_usd(): BigNumber {
-        return normalize_denom(new BigNumber(LIQUIDATE_COST * this.storage.prices['SCRT']), 6)
+        return this.storage.gas_cost_usd(
+            this.storage.config.gas_costs.liquidate
+        )
     }
 }
 
