@@ -9,7 +9,7 @@ import BigNumber from 'bignumber.js'
 import { Market, Loan } from './liquidator'
 import {
     normalize_denom, decrease_by_percent,
-    clamp, percentage_diff
+    raw_denom, clamp, percentage_diff
 } from './math'
 import * as Tx from './tx'
 import { Storage, PoolInfo } from './storage'
@@ -131,7 +131,7 @@ export class LiquidationsManager {
                 payable.route,
                 this.token,
                 amount.toString(),
-                payable.output_amount.toFixed(0, BigNumber.ROUND_DOWN)
+                payable.output_amount.toFixed(0, BigNumber.ROUND_UP)
             )
             const swap_amount = new BigNumber(Tx.get_value(resp, 'return_amount')!)
 
@@ -195,11 +195,10 @@ export class LiquidationsManager {
 
         const decimals = await storage.decimals_cache.get_many([this.token, market.underlying])
 
-        let balance = normalize_denom(storage.user_balance, decimals[0])
-        const payable = normalize_denom(candidate.payable, decimals[1])
+        let balance = storage.user_balance
 
-        let balance_usd = balance.multipliedBy(storage.prices[storage.config.token.symbol])
-        const payable_usd = payable.multipliedBy(storage.prices[market.symbol])
+        let balance_usd = storage.usd_value(balance, storage.config.token.symbol, decimals[0])
+        const payable_usd = storage.usd_value(candidate.payable, market.symbol, decimals[1])
 
         // Add a 10 USD buffer, otherwise the difference is insignificatnt
         if (balance_usd.gt(payable_usd.plus(10))) {
@@ -209,7 +208,7 @@ export class LiquidationsManager {
             // We do this so that we don't have to swap more than we need to
             if (diff > 0) {
                 balance = balance.minus(decrease_by_percent(balance, diff, 100))
-                balance_usd = balance.multipliedBy(storage.prices[storage.config.token.symbol])
+                balance_usd = storage.usd_value(balance, storage.config.token.symbol, decimals[0])
             }
         }
 
@@ -243,7 +242,7 @@ export class LiquidationsManager {
             output_amount,
             price_impact: percentage_diff(
                 balance_usd,
-                output_amount.multipliedBy(storage.prices[market.symbol])
+                storage.usd_value(output_amount, market.symbol, decimals[1])
             ),
             route
         }
