@@ -23,9 +23,9 @@ max_price_impact: 0.05
 # running liquidations that would yield less than the cost of
 # executing those messages.
 gas_costs:
-  swap: 260000
+  swap: 140000
   liquidate: 900000
-  withdraw: 200000
+  withdraw: 110000
 
 # The markets to liquidate from. Each entry contains:
 # address - the address of the token to liquidate with
