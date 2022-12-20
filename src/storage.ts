@@ -139,9 +139,10 @@ export class Storage {
     }
 }
 
-class TimedCache<T> {
+export class TimedCache<T> {
     private cache: Map<Address, [T, number]> = new Map()
     private query: string
+    private outbound: Map<Address, Promise<[number, T][]>> = new Map()
 
     constructor(
         private multicall: Multicall,
@@ -171,28 +172,35 @@ class TimedCache<T> {
             if (value && Date.now() - value[1] < this.expiration)
                 result.push(value[0])
             else {
-                result.push(null)
-                buffer.push([i, contract])
-            }
+                const request = this.outbound.get(contract.address)
 
+                if (request) {
+                    await request
+                    result.push(this.cache.get(contract.address)![0])
+                } else {
+                    result.push(null)
+                    buffer.push([i, contract])
+                }
+            }
             if (
                 buffer.length === this.batch_size ||
                 (buffer.length > 0 && i == contracts.length - 1)
             ) {
-                requests.push(this.batch_call(buffer))
+                const batch = this.batch_call(buffer)
+                buffer.forEach(x => this.outbound.set(x[1].address, batch))
+                requests.push(batch)
+
                 buffer = []
             }
         }
 
         const responses = await Promise.all(requests)
-        const now = Date.now()
 
         for (const response of responses) {
             for (const item of response) {
                 const i = item[0]
                 const value = item[1]
 
-                this.cache.set(contracts[i].address, [value, now])
                 result[i] = value
             }
         }
@@ -210,13 +218,21 @@ class TimedCache<T> {
             }
         }))
 
+        const now = Date.now()
+
         for (const [i, res] of resp.entries()) {
             if (res.error) {
                 throw new Error(b64decode(res.error))
             }
 
-            const item = JSON.parse(b64decode(res.data!))
-            items.push([buffer[i][0], this.on_item(item)])
+            const data = JSON.parse(b64decode(res.data!))
+            const item = this.on_item(data)
+
+            items.push([buffer[i][0], item])
+
+            const address = buffer[i][1].address 
+            this.cache.set(address, [item, now])
+            this.outbound.delete(address)
         }
 
         return items
